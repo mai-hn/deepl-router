@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepRouter · DeepL 路由</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#overview"><span class="brand-mark">D</span><span>DeepRouter</span></a>
+      <div class="header-tools"><span class="runtime"><i></i>服务运行正常</span><a href="#providers" class="header-link">路由</a><a href="#endpoint" class="header-link">接口</a><a href="#test" class="header-link">测试</a></div>
+    </header>
+    <main class="page">
+      <section id="overview" class="hero">
+        <span class="eyebrow">DEEPL 路由管理</span>
+        <h1>DeepL 路由</h1>
+        <p>配置并管理多个 DeepL 翻译服务提供商。DeepRouter 将根据路由策略智能选择最优路由。</p>
+        <div class="hero-chips"><span>◆ 加权轮询</span><span>◆ 失败回退</span><span>◆ 通道检测</span><span>◆ DeepL 兼容</span></div>
+        <div class="hazard-stripe" aria-hidden="true"></div>
+      </section>
+
+      <section id="providers" class="panel provider-panel">
+        <div class="panel-heading"><div class="heading-icon purple">↔</div><div><h2>DeepL 路由列表</h2><p>管理可用的翻译服务路由</p></div><button class="button yellow add-button" id="add-provider">＋ 添加路由</button></div>
+        <div class="table-wrap"><table><thead><tr><th>通道</th><th>类型</th><th>状态</th><th>优先级</th><th>权重</th><th>延迟</th><th>启用</th><th>操作</th></tr></thead><tbody id="providers-body"></tbody></table></div>
+        <div id="empty-providers" class="empty-state">尚未配置 DeepL 路由。点击「添加路由」以接入 DeepL、DeepLX 或自定义 API。</div>
+        <p class="panel-note">优先级数值越小越优先；同优先级通道使用平滑加权轮询；请求失败时根据配置自动回退。</p>
+      </section>
+
+      <section id="routing" class="panel strategy-panel">
+        <div class="panel-heading"><div class="heading-icon green">▦</div><div><h2>路由策略与下游 Key</h2><p>设置通道分配逻辑，以及客户端的访问凭证</p></div></div>
+        <div class="settings-grid"><label>路由策略<select><option>加权轮询（推荐）</option></select><small>根据通道优先级与权重，平衡请求分配。</small></label><label>失败重试次数<select><option>自动回退</option></select><small>失败后尝试下一个候选通道。</small></label></div>
+        <div class="strategy-bottom"><label class="switch-row">启用失败回退 <input id="fallback-enabled" type="checkbox" checked /><span class="switch"><i></i></span></label><button id="save-strategy" class="button outline">保存策略</button></div>
+        <div id="endpoint" class="key-line"><label>下游访问 Key <input id="downstream-key" type="password" placeholder="留空仅用于本机开发" /><small>下游客户端通过 <code>Authorization: Bearer &lt;key&gt;</code> 调用。</small></label><button id="save-key" class="button yellow">保存 Key</button></div>
+        <div class="endpoint-code"><span>DeepL 兼容</span><code>POST /v2/translate</code><span>沉浸式翻译</span><code>POST /translate</code></div>
+      </section>
+
+      <section id="test" class="panel test-panel">
+        <div class="panel-heading"><div class="heading-icon purple">文</div><div><h2>翻译测试</h2><p>使用当前路由配置发起一次真实翻译请求</p></div></div>
+        <div class="form-grid"><label>源语言<select id="test-source"><option value="">自动检测</option><option value="EN">英语</option><option value="ZH">中文</option><option value="JA">日语</option></select></label><label>目标语言<select id="test-target"><option value="ZH">中文</option><option value="EN">英语</option><option value="JA">日语</option><option value="DE">德语</option></select></label></div>
+        <div class="translation-grid"><label>原文<textarea id="test-text" maxlength="5000" placeholder="请输入需要翻译的文本…">Hello, translation routing!</textarea></label><button class="swap-icon" type="button" aria-label="交换语言">⇄</button><div class="result-box"><span>译文</span><p id="test-result">等待测试请求</p><small id="test-provider"></small></div></div>
+        <div class="test-actions"><span id="test-status" role="status">就绪</span><button class="button yellow" id="test-translation">↔ 翻译</button></div>
+      </section>
+    </main>
+    <footer>DeepRouter · Flask + FastAPI · <span id="provider-count">0</span> 个已配置通道 / <span id="healthy-count">0</span> 个可用</footer>
+
+    <dialog id="provider-dialog"><form id="provider-form"><div class="modal-heading"><div><span class="eyebrow">DEEPL 路由配置</span><h2 id="dialog-title">添加路由</h2></div><button type="button" data-close-dialog class="close-button">×</button></div><input type="hidden" id="provider-id" /><div class="form-grid"><label>名称<input id="provider-name" required placeholder="例如：DeepL 官方" /></label><label>类型<select id="provider-kind"><option value="deepl">DeepL API</option><option value="deeplx">DeepLX / DLX</option><option value="custom">自定义 API</option></select></label></div><label>服务地址<input id="provider-endpoint" required placeholder="https://api.deepl.com" /><small id="endpoint-help">DeepL 地址会自动补齐 /v2/translate。</small></label><label>API Key / Token<input id="provider-key" type="password" placeholder="DeepL Key、DLX Token 或 Bearer Token" /><small>保存后仅会在列表中显示掩码。</small></label><div class="form-grid three"><label>优先级<input id="provider-priority" type="number" min="1" value="100" required /><small>越小越优先</small></label><label>权重<input id="provider-weight" type="number" min="1" value="1" required /><small>同优先级分配比例</small></label><label>超时（秒）<input id="provider-timeout" type="number" min="2" value="20" required /></label></div><label class="check-row"><input id="provider-enabled" type="checkbox" checked /> 创建后立即启用</label><div class="modal-actions"><button type="button" data-close-dialog class="button ghost">取消</button><button id="save-provider" type="submit" class="button yellow">保存路由</button></div></form></dialog>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
