@@ -40,3 +40,31 @@ def test_usage_endpoint_persists_usage(tmp_path, monkeypatch):
     saved = temp_store.provider(provider["id"])
     assert saved["usage_character_count"] == 120
     assert saved["usage_character_limit"] == 500000
+
+
+def test_batch_check_can_disable_and_delete_unhealthy_routes(tmp_path, monkeypatch):
+    temp_store = Store(tmp_path / "router.db")
+    healthy = temp_store.create_provider({"name": "Healthy", "kind": "deeplx", "endpoint": "https://healthy.example", "api_key": "", "priority": 1, "weight": 1, "enabled": True, "timeout_seconds": 20})
+    unhealthy = temp_store.create_provider({"name": "Unhealthy", "kind": "deeplx", "endpoint": "https://unhealthy.example", "api_key": "", "priority": 1, "weight": 1, "enabled": True, "timeout_seconds": 20})
+    monkeypatch.setattr(application, "store", temp_store)
+
+    async def fake_check(provider):
+        ok = provider["id"] == healthy["id"]
+        temp_store.set_health(provider["id"], "healthy" if ok else "unhealthy", 12, None if ok else "offline")
+        return {"ok": ok, "latency_ms": 12, **({} if ok else {"error": "offline"})}
+
+    monkeypatch.setattr(application.router, "check", fake_check)
+    client = TestClient(application.app)
+    checked = client.post("/api/providers/check")
+    assert checked.status_code == 200
+    assert checked.json()["healthy"] == 1
+    assert checked.json()["unhealthy"] == 1
+
+    disabled = client.post("/api/providers/batch/disable-unhealthy", json={"provider_ids": [unhealthy["id"]]})
+    assert disabled.json()["count"] == 1
+    assert temp_store.provider(unhealthy["id"])["enabled"] is False
+    assert temp_store.provider(healthy["id"])["enabled"] is True
+
+    deleted = client.post("/api/providers/batch/delete-unhealthy", json={"provider_ids": [unhealthy["id"]]})
+    assert deleted.json()["count"] == 1
+    assert temp_store.provider(unhealthy["id"]) is None

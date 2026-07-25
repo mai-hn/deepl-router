@@ -141,6 +141,41 @@ class Store:
         with self.connection() as conn:
             return conn.execute("DELETE FROM providers WHERE id = ?", (provider_id,)).rowcount > 0
 
+    @staticmethod
+    def _unique_provider_ids(provider_ids: list[int]) -> list[int]:
+        return list(dict.fromkeys(provider_ids))
+
+    def disable_unhealthy_providers(self, provider_ids: list[int]) -> list[int]:
+        ids = self._unique_provider_ids(provider_ids)
+        placeholders = ",".join("?" for _ in ids)
+        with self.connection() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM providers WHERE id IN ({placeholders}) AND last_status = 'unhealthy' AND enabled = 1",
+                ids,
+            ).fetchall()
+            affected_ids = [row["id"] for row in rows]
+            if affected_ids:
+                affected_placeholders = ",".join("?" for _ in affected_ids)
+                conn.execute(
+                    f"UPDATE providers SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id IN ({affected_placeholders})",
+                    affected_ids,
+                )
+        return affected_ids
+
+    def delete_unhealthy_providers(self, provider_ids: list[int]) -> list[int]:
+        ids = self._unique_provider_ids(provider_ids)
+        placeholders = ",".join("?" for _ in ids)
+        with self.connection() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM providers WHERE id IN ({placeholders}) AND last_status = 'unhealthy'",
+                ids,
+            ).fetchall()
+            affected_ids = [row["id"] for row in rows]
+            if affected_ids:
+                affected_placeholders = ",".join("?" for _ in affected_ids)
+                conn.execute(f"DELETE FROM providers WHERE id IN ({affected_placeholders})", affected_ids)
+        return affected_ids
+
     def set_health(self, provider_id: int, status: str, latency_ms: int | None, error: str | None = None) -> None:
         with self.connection() as conn:
             conn.execute("UPDATE providers SET last_status = ?, last_latency_ms = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, latency_ms, error, provider_id))
