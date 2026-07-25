@@ -1,5 +1,6 @@
 const $ = (selector) => document.querySelector(selector);
 let providers = [];
+let requestLogs = [];
 
 const kindLabel = { deepl: "DeepL API", deeplx: "DeepLX / DLX", custom: "自定义 API" };
 const statusLabel = { healthy: "可用", unhealthy: "不可用", unknown: "未检测" };
@@ -18,24 +19,34 @@ function escapeHtml(value = "") {
 }
 
 function renderProviders() {
-  const body = $("#providers-body");
-  body.innerHTML = providers.map((p) => `<tr>
-    <td><span class="provider-name">${escapeHtml(p.name)}</span><span class="key-hint">${escapeHtml(p.key_hint)}</span></td>
-    <td><span class="kind ${p.kind}">${kindLabel[p.kind]}</span></td>
-    <td><span class="status"><i class="dot ${p.last_status}"></i>${statusLabel[p.last_status] || "未检测"}</span></td>
-    <td>${p.priority}</td><td>${p.weight}</td><td class="latency">${p.last_latency_ms ? `${p.last_latency_ms} ms` : "—"}</td>
-    <td><input class="toggle" type="checkbox" data-toggle="${p.id}" ${p.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(p.name)}"></td>
-    <td><div class="row-actions"><button class="row-action" data-check="${p.id}" title="测试通道">◌</button><button class="row-action" data-edit="${p.id}" title="编辑">✎</button><button class="row-action" data-delete="${p.id}" title="删除">×</button></div></td>
+  $("#providers-body").innerHTML = providers.map((provider) => `<tr>
+    <td><span class="provider-name">${escapeHtml(provider.name)}</span><span class="key-hint">${escapeHtml(provider.key_hint)}</span></td>
+    <td><span class="kind ${provider.kind}">${kindLabel[provider.kind]}</span></td>
+    <td><span class="status"><i class="dot ${provider.last_status}"></i>${statusLabel[provider.last_status] || "未检测"}</span></td>
+    <td>${provider.priority}</td><td>${provider.weight}</td><td class="latency">${provider.last_latency_ms ? `${provider.last_latency_ms} ms` : "—"}</td>
+    <td><input class="toggle" type="checkbox" data-toggle="${provider.id}" ${provider.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(provider.name)}"></td>
+    <td><div class="row-actions"><button class="row-action" data-check="${provider.id}" title="测试路由">◌</button><button class="row-action" data-edit="${provider.id}" title="编辑">✎</button><button class="row-action" data-delete="${provider.id}" title="删除">×</button></div></td>
   </tr>`).join("");
   $("#empty-providers").hidden = providers.length > 0;
   $("#provider-count").textContent = providers.length;
-  $("#healthy-count").textContent = providers.filter((p) => p.last_status === "healthy").length;
+  $("#healthy-count").textContent = providers.filter((provider) => provider.last_status === "healthy").length;
 }
 
-async function loadProviders() {
-  providers = await request("/api/providers");
-  renderProviders();
+function formatTime(value) { return value ? value.replace("T", " ").replace("Z", "") : "—"; }
+function statusTag(status) { return `<span class="log-status ${status}">${status === "success" ? "成功" : "失败"}</span>`; }
+
+function renderLogs() {
+  $("#logs-body").innerHTML = requestLogs.map((log) => `<tr>
+    <td class="log-time">${formatTime(log.created_at)}</td><td>${statusTag(log.status)}</td><td><code>${escapeHtml(log.route)}</code></td>
+    <td>${escapeHtml(log.provider || "—")}</td><td>${log.attempt_count}</td><td class="latency">${log.latency_ms ?? "—"} ms</td>
+    <td class="log-preview" title="${escapeHtml(log.text_preview)}">${escapeHtml(log.text_preview || "—")}</td>
+    <td><button class="row-action log-view" data-log="${log.id}">查看</button></td>
+  </tr>`).join("");
+  $("#empty-logs").hidden = requestLogs.length > 0;
 }
+
+async function loadProviders() { providers = await request("/api/providers"); renderProviders(); }
+async function loadLogs() { requestLogs = await request("/api/logs"); renderLogs(); }
 
 function providerDefaults() {
   $("#provider-id").value = "";
@@ -56,7 +67,7 @@ function openProvider(provider) {
     ["name", "kind", "endpoint", "priority", "weight", "timeout_seconds"].forEach((key) => { $("#provider-" + key.replace("timeout_seconds", "timeout")).value = provider[key]; });
     $("#provider-enabled").checked = provider.enabled;
     $("#provider-key").placeholder = "保持为空以保留当前 Key";
-  } else $("#provider-key").placeholder = "DeepL Key、DLX Token 或 Bearer Token";
+  }
   $("#provider-dialog").showModal();
 }
 
@@ -75,22 +86,25 @@ async function loadSettings() {
 }
 
 async function testProvider(id) {
-  const button = document.querySelector(`[data-check="${id}"]`);
-  button.textContent = "…";
-  try { const result = await request(`/api/providers/${id}/check`, { method: "POST" }); alert(result.ok ? `通道可用，${result.latency_ms} ms` : `检测失败：${result.error}`); } catch (error) { alert(error.message); } finally { await loadProviders(); }
+  try { const result = await request(`/api/providers/${id}/check`, { method: "POST" }); alert(result.ok ? `路由可用，${result.latency_ms} ms` : `检测失败：${result.error}`); } catch (error) { alert(error.message); } finally { await loadProviders(); }
 }
 
 async function testTranslation() {
   const status = $("#test-status");
   status.textContent = "正在请求路由…";
-  $("#test-result").textContent = "";
   try {
     const result = await request("/translate", { method: "POST", body: JSON.stringify({ text: $("#test-text").value, source_lang: $("#test-source").value || null, target_lang: $("#test-target").value }) });
     $("#test-result").textContent = result.data;
     $("#test-provider").textContent = `由 ${result.providers[0]} 返回`;
     status.textContent = "请求成功";
   } catch (error) { status.textContent = error.message; $("#test-result").textContent = "请求未完成"; }
-  await loadProviders();
+  await Promise.all([loadProviders(), loadLogs()]);
+}
+
+async function openLog(logId) {
+  const detail = await request(`/api/logs/${logId}`);
+  $("#log-detail").textContent = JSON.stringify(detail, null, 2);
+  $("#log-dialog").showModal();
 }
 
 document.addEventListener("click", async (event) => {
@@ -98,16 +112,18 @@ document.addEventListener("click", async (event) => {
   if (!target) return;
   if (target.id === "add-provider") openProvider();
   if (target.dataset.closeDialog !== undefined) $("#provider-dialog").close();
-  if (target.id === "refresh-providers") loadProviders();
-  if (target.dataset.edit) openProvider(providers.find((p) => p.id === Number(target.dataset.edit)));
+  if (target.dataset.closeLog !== undefined) $("#log-dialog").close();
+  if (target.id === "refresh-logs") loadLogs();
+  if (target.dataset.edit) openProvider(providers.find((provider) => provider.id === Number(target.dataset.edit)));
   if (target.dataset.check) testProvider(target.dataset.check);
-  if (target.dataset.delete && confirm("确定删除此通道？")) { await request(`/api/providers/${target.dataset.delete}`, { method: "DELETE" }); await loadProviders(); }
+  if (target.dataset.log) openLog(target.dataset.log);
+  if (target.dataset.delete && confirm("确定删除此路由？")) { await request(`/api/providers/${target.dataset.delete}`, { method: "DELETE" }); await loadProviders(); }
   if (target.dataset.toggle) { await request(`/api/providers/${target.dataset.toggle}`, { method: "PATCH", body: JSON.stringify({ enabled: target.checked }) }); await loadProviders(); }
   if (target.id === "save-strategy") { await request("/api/settings", { method: "PUT", body: JSON.stringify({ fallback_enabled: $("#fallback-enabled").checked }) }); alert("路由策略已保存"); }
-  if (target.id === "save-key") { const key = $("#downstream-key").value; const payload = key ? { downstream_key: key } : {}; await request("/api/settings", { method: "PUT", body: JSON.stringify(payload) }); $("#downstream-key").value = ""; await loadSettings(); alert("下游访问密钥已保存"); }
-  if (target.id === "clear-key") { if (confirm("确定清除下游访问 Key？清除后客户端可不带 Key 访问接口。")) { await request("/api/settings", { method: "PUT", body: JSON.stringify({ downstream_key: "" }) }); $("#downstream-key").value = ""; await loadSettings(); alert("下游访问 Key 已清除"); } }
+  if (target.id === "save-key") { const key = $("#downstream-key").value; if (key) await request("/api/settings", { method: "PUT", body: JSON.stringify({ downstream_key: key }) }); $("#downstream-key").value = ""; await loadSettings(); alert("下游访问密钥已保存"); }
+  if (target.id === "clear-key" && confirm("确定清除下游访问 Key？清除后客户端可不带 Key 访问接口。")) { await request("/api/settings", { method: "PUT", body: JSON.stringify({ downstream_key: "" }) }); $("#downstream-key").value = ""; await loadSettings(); alert("下游访问 Key 已清除"); }
   if (target.id === "test-translation") testTranslation();
 });
 
 $("#provider-form").addEventListener("submit", saveProvider);
-Promise.all([loadProviders(), loadSettings()]).catch((error) => { console.error(error); alert("无法连接到服务：" + error.message); });
+Promise.all([loadProviders(), loadSettings(), loadLogs()]).catch((error) => { console.error(error); alert("无法连接到服务：" + error.message); });
