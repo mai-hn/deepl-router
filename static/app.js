@@ -2,9 +2,15 @@ const $ = (selector) => document.querySelector(selector);
 let providers = [];
 let requestLogs = [];
 let batchCheckRunning = false;
+const collapsedKinds = new Set();
 
-const kindLabel = { deepl: "DeepL API", deeplx: "DeepLX / DLX", custom: "自定义 API" };
-const statusLabel = { healthy: "可用", unhealthy: "不可用", unknown: "未检测" };
+const kindLabel = { deepl: "DeepL API", deeplx: "DeepLX / DLX", tencent: "腾讯云机器翻译", custom: "自定义 API" };
+const upstreamFormConfig = {
+  deepl: { endpoint: "https://api.deepl.com", endpointHelp: "DeepL 地址会自动补齐 /v2/translate。", keyLabel: "DeepL API Key", keyPlaceholder: "DeepL Key", secret: false },
+  deeplx: { endpoint: "https://dlx.example.com/translate", endpointHelp: "DeepLX / DLX 地址会自动使用 /translate。", keyLabel: "API Key / Token（可选）", keyPlaceholder: "DLX Token（可选）", secret: false },
+  tencent: { endpoint: "https://tmt.tencentcloudapi.com", endpointHelp: "腾讯云机器翻译使用 TextTranslate 接口与 TC3-HMAC-SHA256 鉴权。", keyLabel: "腾讯云 SecretId", keyPlaceholder: "请输入 SecretId", secret: true },
+  custom: { endpoint: "https://translate.example.com/translate", endpointHelp: "自定义 API 使用 JSON：text、source_lang、target_lang。", keyLabel: "API Key / Token（可选）", keyPlaceholder: "Bearer Token（可选）", secret: false },
+};
 
 async function request(path, options = {}) {
   const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
@@ -45,15 +51,26 @@ function renderUnhealthyActions() {
   container.innerHTML = unhealthyCount ? `<span>当前有 <b>${unhealthyCount}</b> 个不可用路由</span><div><button class="button outline" id="disable-unhealthy">批量禁用</button><button class="button danger" id="delete-unhealthy">批量删除</button></div>` : "";
 }
 
-function renderProviders() {
-  $("#providers-body").innerHTML = providers.map((provider) => `<tr>
+function providerRow(provider, hidden) {
+  return `<tr${hidden ? ' hidden' : ''}>
     <td><span class="provider-name">${escapeHtml(provider.name)}</span><span class="key-hint">${escapeHtml(provider.key_hint)}</span></td>
     <td><span class="kind ${provider.kind}">${kindLabel[provider.kind]}</span></td>
     <td>${healthStatus(provider)}</td>
     <td>${provider.priority}</td><td>${provider.weight}</td><td class="latency">${provider.last_latency_ms ? `${provider.last_latency_ms} ms` : "—"}</td><td>${formatUsage(provider)}</td>
     <td><input class="toggle" type="checkbox" data-toggle="${provider.id}" ${provider.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(provider.name)}"></td>
     <td><div class="row-actions"><button class="row-action" data-check="${provider.id}" title="测试路由">◌</button><button class="row-action" data-edit="${provider.id}" title="编辑">✎</button><button class="row-action" data-delete="${provider.id}" title="删除">×</button></div></td>
-  </tr>`).join("");
+  </tr>`;
+}
+
+function renderProviders() {
+  const groups = providers.reduce((result, provider) => {
+    (result[provider.kind] ||= []).push(provider);
+    return result;
+  }, {});
+  $("#providers-body").innerHTML = Object.entries(groups).map(([kind, items]) => {
+    const collapsed = collapsedKinds.has(kind);
+    return `<tr class="provider-group"><td colspan="9"><button class="provider-group-toggle" data-group="${kind}"><span>${collapsed ? "＋" : "−"}</span>${kindLabel[kind]}<small>${items.length} 个通道</small></button></td></tr>${items.map((provider) => providerRow(provider, collapsed)).join("")}`;
+  }).join("");
   $("#empty-providers").hidden = providers.length > 0;
   $("#provider-count").textContent = providers.length;
   $("#healthy-count").textContent = providers.filter((provider) => provider.last_status === "healthy").length;
@@ -85,6 +102,17 @@ function providerDefaults() {
   $("#provider-timeout").value = 20;
   $("#provider-enabled").checked = true;
   $("#provider-kind").value = "deepl";
+  updateProviderForm("deepl", true);
+}
+
+function updateProviderForm(kind, resetEndpoint = false) {
+  const config = upstreamFormConfig[kind];
+  $("#provider-key-label").textContent = config.keyLabel;
+  $("#provider-key").placeholder = config.keyPlaceholder;
+  $("#endpoint-help").textContent = config.endpointHelp;
+  $("#provider-secret-row").hidden = !config.secret;
+  $("#provider-secret").required = config.secret && !$("#provider-id").value;
+  if (resetEndpoint) $("#provider-endpoint").value = config.endpoint;
 }
 
 function openProvider(provider) {
@@ -95,6 +123,8 @@ function openProvider(provider) {
     ["name", "kind", "endpoint", "priority", "weight", "timeout_seconds"].forEach((key) => { $("#provider-" + key.replace("timeout_seconds", "timeout")).value = provider[key]; });
     $("#provider-enabled").checked = provider.enabled;
     $("#provider-key").placeholder = "保持为空以保留当前 Key";
+    $("#provider-secret").placeholder = "保持为空以保留当前 SecretKey";
+    updateProviderForm(provider.kind);
   }
   $("#provider-dialog").showModal();
 }
@@ -110,8 +140,9 @@ function openBatchDialog() {
 async function saveProvider(event) {
   event.preventDefault();
   const id = $("#provider-id").value;
-  const data = { name: $("#provider-name").value.trim(), kind: $("#provider-kind").value, endpoint: $("#provider-endpoint").value.trim(), api_key: $("#provider-key").value, priority: Number($("#provider-priority").value), weight: Number($("#provider-weight").value), timeout_seconds: Number($("#provider-timeout").value), enabled: $("#provider-enabled").checked };
+  const data = { name: $("#provider-name").value.trim(), kind: $("#provider-kind").value, endpoint: $("#provider-endpoint").value.trim(), api_key: $("#provider-key").value, api_secret: $("#provider-secret").value, priority: Number($("#provider-priority").value), weight: Number($("#provider-weight").value), timeout_seconds: Number($("#provider-timeout").value), enabled: $("#provider-enabled").checked };
   if (id && !data.api_key) delete data.api_key;
+  if (id && !data.api_secret) delete data.api_secret;
   try { await request(id ? `/api/providers/${id}` : "/api/providers", { method: id ? "PATCH" : "POST", body: JSON.stringify(data) }); $("#provider-dialog").close(); await loadProviders(); } catch (error) { alert(error.message); }
 }
 
@@ -250,6 +281,7 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.closeLog !== undefined) $("#log-dialog").close();
   if (target.id === "refresh-logs") loadLogs();
   if (target.dataset.edit) openProvider(providers.find((provider) => provider.id === Number(target.dataset.edit)));
+  if (target.dataset.group) { collapsedKinds.has(target.dataset.group) ? collapsedKinds.delete(target.dataset.group) : collapsedKinds.add(target.dataset.group); renderProviders(); }
   if (target.dataset.check) testProvider(target.dataset.check);
   if (target.dataset.usage) queryUsage(target.dataset.usage);
   if (target.dataset.log) openLog(target.dataset.log);
@@ -263,4 +295,5 @@ document.addEventListener("click", async (event) => {
 
 $("#provider-form").addEventListener("submit", saveProvider);
 $("#batch-form").addEventListener("submit", saveBatch);
+$("#provider-kind").addEventListener("change", (event) => updateProviderForm(event.target.value, true));
 Promise.all([loadProviders(), loadSettings(), loadLogs()]).catch((error) => { console.error(error); alert("无法连接到服务：" + error.message); });

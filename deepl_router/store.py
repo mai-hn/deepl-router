@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA = """
+PROVIDERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('deepl', 'deeplx', 'custom')),
+  kind TEXT NOT NULL CHECK(kind IN ('deepl', 'deeplx', 'tencent', 'custom')),
   endpoint TEXT NOT NULL,
   api_key TEXT NOT NULL DEFAULT '',
+  api_secret TEXT NOT NULL DEFAULT '',
   priority INTEGER NOT NULL DEFAULT 100,
   weight INTEGER NOT NULL DEFAULT 1,
   enabled INTEGER NOT NULL DEFAULT 1,
@@ -28,6 +29,9 @@ CREATE TABLE IF NOT EXISTS providers (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+"""
+
+SCHEMA = PROVIDERS_SCHEMA + """
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -65,15 +69,31 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             conn.executescript(SCHEMA)
-            self._ensure_provider_usage_columns(conn)
+            self._migrate_provider_kinds(conn)
+            self._ensure_provider_columns(conn)
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('routing_mode', 'weighted')")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('fallback_enabled', 'true')")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('downstream_key', '')")
 
     @staticmethod
-    def _ensure_provider_usage_columns(conn: sqlite3.Connection) -> None:
+    def _migrate_provider_kinds(conn: sqlite3.Connection) -> None:
+        definition = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'providers'").fetchone()["sql"]
+        if "'tencent'" in definition:
+            return
+        conn.execute("ALTER TABLE providers RENAME TO providers_legacy")
+        conn.executescript(PROVIDERS_SCHEMA)
+        legacy_columns = {row["name"] for row in conn.execute("PRAGMA table_info(providers_legacy)").fetchall()}
+        new_columns = {row["name"] for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
+        columns = [name for name in legacy_columns & new_columns]
+        quoted = ",".join(columns)
+        conn.execute(f"INSERT INTO providers ({quoted}) SELECT {quoted} FROM providers_legacy")
+        conn.execute("DROP TABLE providers_legacy")
+
+    @staticmethod
+    def _ensure_provider_columns(conn: sqlite3.Connection) -> None:
         existing = {row["name"] for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
         for name, definition in {
+            "api_secret": "TEXT NOT NULL DEFAULT ''",
             "usage_character_count": "INTEGER",
             "usage_character_limit": "INTEGER",
             "usage_checked_at": "TEXT",
@@ -98,6 +118,7 @@ class Store:
         item["enabled"] = bool(item["enabled"])
         if not reveal_key:
             key = item.pop("api_key", "")
+            item.pop("api_secret", None)
             item["key_hint"] = ("•" * 8 + key[-4:]) if key else "未设置"
         return item
 
@@ -116,23 +137,23 @@ class Store:
         return self.row_to_dict(row, reveal_key) if row else None
 
     def create_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
-        fields = ("name", "kind", "endpoint", "api_key", "priority", "weight", "enabled", "timeout_seconds")
+        fields = ("name", "kind", "endpoint", "api_key", "api_secret", "priority", "weight", "enabled", "timeout_seconds")
         with self.connection() as conn:
             cursor = conn.execute(
                 f"INSERT INTO providers ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
-                [payload[field] for field in fields],
+                [payload.get(field, "") if field == "api_secret" else payload[field] for field in fields],
             )
             row = conn.execute("SELECT * FROM providers WHERE id = ?", (cursor.lastrowid,)).fetchone()
         return self.row_to_dict(row)
 
     def create_providers(self, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        fields = ("name", "kind", "endpoint", "api_key", "priority", "weight", "enabled", "timeout_seconds")
+        fields = ("name", "kind", "endpoint", "api_key", "api_secret", "priority", "weight", "enabled", "timeout_seconds")
         with self.connection() as conn:
             ids = []
             for payload in payloads:
                 cursor = conn.execute(
                     f"INSERT INTO providers ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
-                    [payload[field] for field in fields],
+                    [payload.get(field, "") if field == "api_secret" else payload[field] for field in fields],
                 )
                 ids.append(cursor.lastrowid)
             rows = conn.execute(
@@ -141,7 +162,7 @@ class Store:
         return [self.row_to_dict(row) for row in rows]
 
     def update_provider(self, provider_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
-        allowed = {"name", "kind", "endpoint", "api_key", "priority", "weight", "enabled", "timeout_seconds"}
+        allowed = {"name", "kind", "endpoint", "api_key", "api_secret", "priority", "weight", "enabled", "timeout_seconds"}
         changes = {key: value for key, value in payload.items() if key in allowed and value is not None}
         if not changes:
             return self.provider(provider_id, reveal_key=False)

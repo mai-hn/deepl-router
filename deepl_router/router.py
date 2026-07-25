@@ -1,35 +1,18 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from .store import Store
+from .upstreams import UPSTREAMS, TranslationResult, UpstreamError
 
 
 class TranslationError(RuntimeError):
     def __init__(self, message: str, attempts: list[dict[str, Any]] | None = None) -> None:
         super().__init__(message)
         self.attempts = attempts or []
-
-
-class UpstreamError(RuntimeError):
-    def __init__(self, message: str, *, request: dict[str, Any], response: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.request = request
-        self.response = response
-
-
-@dataclass
-class TranslationResult:
-    text: str
-    detected_source_language: str | None
-    provider: str
-    upstream_request: dict[str, Any] | None = None
-    upstream_response: dict[str, Any] | None = None
-    attempts: list[dict[str, Any]] | None = None
 
 
 class ProviderRouter:
@@ -81,11 +64,7 @@ class ProviderRouter:
                 result = await self._call_provider(provider, text, target_lang, source_lang)
                 latency_ms = round((time.perf_counter() - started) * 1000)
                 self.store.set_health(provider["id"], "healthy", latency_ms)
-                attempts.append({
-                    "provider": provider["name"], "kind": provider["kind"], "status": "success",
-                    "latency_ms": latency_ms, "request": result.upstream_request or {},
-                    "response": result.upstream_response or {},
-                })
+                attempts.append({"provider": provider["name"], "kind": provider["kind"], "status": "success", "latency_ms": latency_ms, "request": result.upstream_request or {}, "response": result.upstream_response or {}})
                 result.attempts = attempts
                 return result
             except Exception as exc:  # noqa: BLE001 - failures must trigger fallback
@@ -94,11 +73,7 @@ class ProviderRouter:
                 self.store.set_health(provider["id"], "unhealthy", latency_ms, message)
                 upstream_request = exc.request if isinstance(exc, UpstreamError) else {"endpoint": provider["endpoint"]}
                 upstream_response = exc.response if isinstance(exc, UpstreamError) else None
-                attempts.append({
-                    "provider": provider["name"], "kind": provider["kind"], "status": "failed",
-                    "latency_ms": latency_ms, "request": upstream_request,
-                    "response": upstream_response, "error": message,
-                })
+                attempts.append({"provider": provider["name"], "kind": provider["kind"], "status": "failed", "latency_ms": latency_ms, "request": upstream_request, "response": upstream_response, "error": message})
                 errors.append(f"{provider['name']}: {message}")
                 if settings.get("fallback_enabled", "true") != "true" or index == len(ordered) - 1:
                     break
@@ -117,61 +92,9 @@ class ProviderRouter:
             return {"ok": False, "latency_ms": latency_ms, "error": str(exc)}
 
     async def _call_provider(self, provider: dict[str, Any], text: str, target_lang: str, source_lang: str | None) -> TranslationResult:
+        upstream = UPSTREAMS.get(provider["kind"])
+        if not upstream:
+            raise UpstreamError(f"Unsupported upstream kind: {provider['kind']}", request={"endpoint": provider["endpoint"]})
         timeout = httpx.Timeout(float(provider["timeout_seconds"]))
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            if provider["kind"] == "deepl":
-                return await self._deepl(client, provider, text, target_lang, source_lang)
-            return await self._json_translate(client, provider, text, target_lang, source_lang)
-
-    @staticmethod
-    def _body(response: httpx.Response) -> Any:
-        try:
-            return response.json()
-        except ValueError:
-            return response.text[:2000]
-
-    async def _deepl(self, client: httpx.AsyncClient, provider: dict[str, Any], text: str, target_lang: str, source_lang: str | None) -> TranslationResult:
-        endpoint = provider["endpoint"].rstrip("/")
-        if not endpoint.endswith("/v2/translate"):
-            endpoint += "/v2/translate"
-        body = {"text": [text], "target_lang": target_lang}
-        if source_lang:
-            body["source_lang"] = source_lang
-        request = {"method": "POST", "endpoint": endpoint, "body": body}
-        try:
-            response = await client.post(endpoint, json=body, headers={"Authorization": f"DeepL-Auth-Key {provider['api_key']}"})
-            response_body = self._body(response)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise UpstreamError(str(exc), request=request, response={"status_code": exc.response.status_code, "body": self._body(exc.response)}) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise UpstreamError(str(exc), request=request) from exc
-        translations = response_body.get("translations") if isinstance(response_body, dict) else None
-        if not translations or not translations[0].get("text"):
-            raise UpstreamError("DeepL response is missing translations[0].text", request=request, response={"status_code": response.status_code, "body": response_body})
-        item = translations[0]
-        return TranslationResult(item["text"], item.get("detected_source_language"), provider["name"], request, {"status_code": response.status_code, "body": response_body})
-
-    async def _json_translate(self, client: httpx.AsyncClient, provider: dict[str, Any], text: str, target_lang: str, source_lang: str | None) -> TranslationResult:
-        endpoint = provider["endpoint"].rstrip("/")
-        if not endpoint.endswith("/translate"):
-            endpoint += "/translate"
-        body = {"text": text, "target_lang": target_lang, "source_lang": source_lang or "auto"}
-        headers = {"Content-Type": "application/json"}
-        if provider["api_key"]:
-            headers["Authorization"] = f"Bearer {provider['api_key']}"
-        request = {"method": "POST", "endpoint": endpoint, "body": body}
-        try:
-            response = await client.post(endpoint, json=body, headers=headers)
-            response_body = self._body(response)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise UpstreamError(str(exc), request=request, response={"status_code": exc.response.status_code, "body": self._body(exc.response)}) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise UpstreamError(str(exc), request=request) from exc
-        translated = response_body.get("text") or response_body.get("data") or response_body.get("translation") if isinstance(response_body, dict) else None
-        if isinstance(translated, dict):
-            translated = translated.get("text") or translated.get("translation")
-        if not isinstance(translated, str) or not translated:
-            raise UpstreamError("Upstream response has no text/data/translation field", request=request, response={"status_code": response.status_code, "body": response_body})
-        return TranslationResult(translated, response_body.get("detected_source_language") or response_body.get("source_lang"), provider["name"], request, {"status_code": response.status_code, "body": response_body})
+            return await upstream.translate(client, provider, text, target_lang, source_lang)
