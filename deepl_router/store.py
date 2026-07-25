@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -27,6 +28,20 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS request_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id TEXT NOT NULL,
+  route TEXT NOT NULL,
+  downstream_request TEXT NOT NULL,
+  upstream_attempts TEXT NOT NULL DEFAULT '[]',
+  response_body TEXT,
+  provider TEXT,
+  status TEXT NOT NULL,
+  latency_ms INTEGER,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
 """
 
 
@@ -71,10 +86,10 @@ class Store:
 
     def create_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
         fields = ("name", "kind", "endpoint", "api_key", "priority", "weight", "enabled", "timeout_seconds")
-        values = [payload[field] for field in fields]
         with self.connection() as conn:
             cursor = conn.execute(
-                f"INSERT INTO providers ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})", values
+                f"INSERT INTO providers ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
+                [payload[field] for field in fields],
             )
             row = conn.execute("SELECT * FROM providers WHERE id = ?", (cursor.lastrowid,)).fetchone()
         return self.row_to_dict(row)
@@ -86,10 +101,7 @@ class Store:
             return self.provider(provider_id, reveal_key=False)
         assignments = ", ".join(f"{key} = ?" for key in changes)
         with self.connection() as conn:
-            conn.execute(
-                f"UPDATE providers SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (*changes.values(), provider_id),
-            )
+            conn.execute(f"UPDATE providers SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (*changes.values(), provider_id))
             row = conn.execute("SELECT * FROM providers WHERE id = ?", (provider_id,)).fetchone()
         return self.row_to_dict(row) if row else None
 
@@ -99,10 +111,7 @@ class Store:
 
     def set_health(self, provider_id: int, status: str, latency_ms: int | None, error: str | None = None) -> None:
         with self.connection() as conn:
-            conn.execute(
-                "UPDATE providers SET last_status = ?, last_latency_ms = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (status, latency_ms, error, provider_id),
-            )
+            conn.execute("UPDATE providers SET last_status = ?, last_latency_ms = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, latency_ms, error, provider_id))
 
     def settings(self) -> dict[str, str]:
         with self.connection() as conn:
@@ -116,3 +125,36 @@ class Store:
                 if key in allowed and value is not None:
                     conn.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
         return self.settings()
+
+    def create_request_log(self, *, request_id: str, route: str, downstream_request: dict[str, Any], upstream_attempts: list[dict[str, Any]], response_body: dict[str, Any] | None, provider: str | None, status: str, latency_ms: int | None, error: str | None = None) -> int:
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """INSERT INTO request_logs(request_id, route, downstream_request, upstream_attempts, response_body, provider, status, latency_ms, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (request_id, route, json.dumps(downstream_request, ensure_ascii=False), json.dumps(upstream_attempts, ensure_ascii=False), json.dumps(response_body, ensure_ascii=False) if response_body is not None else None, provider, status, latency_ms, error),
+            )
+        return int(cursor.lastrowid)
+
+    @staticmethod
+    def log_row_to_dict(row: sqlite3.Row, detail: bool = False) -> dict[str, Any]:
+        item = dict(row)
+        for field in ("downstream_request", "upstream_attempts", "response_body"):
+            if item[field] is not None:
+                item[field] = json.loads(item[field])
+        if not detail:
+            request = item.pop("downstream_request")
+            item.pop("upstream_attempts", None)
+            item.pop("response_body", None)
+            item["text_preview"] = str(request.get("text", ""))[:100]
+            item["attempt_count"] = len(json.loads(row["upstream_attempts"]))
+        return item
+
+    def request_logs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute("SELECT * FROM request_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [self.log_row_to_dict(row) for row in rows]
+
+    def request_log(self, log_id: int) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM request_logs WHERE id = ?", (log_id,)).fetchone()
+        return self.log_row_to_dict(row, detail=True) if row else None

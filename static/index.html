@@ -12,7 +12,7 @@
   <body>
     <header class="site-header">
       <a class="brand" href="#overview"><span class="brand-mark">D</span><span>DeepRouter</span></a>
-      <div class="header-tools"><span class="runtime"><i></i>服务运行正常</span><a href="#providers" class="header-link">路由</a><a href="#endpoint" class="header-link">接口</a><a href="#test" class="header-link">测试</a></div>
+      <div class="header-tools"><span class="runtime"><i></i>服务运行正常</span><a href="#providers" class="header-link">路由</a><a href="#logs" class="header-link">日志</a><a href="#endpoint" class="header-link">接口</a><a href="#test" class="header-link">测试</a></div>
     </header>
     <main class="page">
       <section id="overview" class="hero">
@@ -44,10 +44,16 @@
         <div class="translation-grid"><label>原文<textarea id="test-text" maxlength="5000" placeholder="请输入需要翻译的文本…">Hello, translation routing!</textarea></label><button class="swap-icon" type="button" aria-label="交换语言">⇄</button><div class="result-box"><span>译文</span><p id="test-result">等待测试请求</p><small id="test-provider"></small></div></div>
         <div class="test-actions"><span id="test-status" role="status">就绪</span><button class="button yellow" id="test-translation">↔ 翻译</button></div>
       </section>
+      <section id="logs" class="panel logs-panel">
+        <div class="panel-heading"><div class="heading-icon green">≡</div><div><h2>请求日志</h2><p>记录下游请求、上游尝试和上游返回；不保存 API Key。</p></div><button class="button outline add-button" id="refresh-logs">刷新日志</button></div>
+        <div class="table-wrap"><table><thead><tr><th>时间</th><th>状态</th><th>下游接口</th><th>上游路由</th><th>尝试</th><th>耗时</th><th>文本</th><th>详情</th></tr></thead><tbody id="logs-body"></tbody></table></div>
+        <div id="empty-logs" class="empty-state">暂无请求日志。通过“翻译测试”或下游接口发起请求后，将在此处显示。</div>
+      </section>
     </main>
     <footer>DeepRouter · Flask + FastAPI · <span id="provider-count">0</span> 个已配置通道 / <span id="healthy-count">0</span> 个可用</footer>
 
     <dialog id="provider-dialog"><form id="provider-form"><div class="modal-heading"><div><span class="eyebrow">DEEPL 路由配置</span><h2 id="dialog-title">添加路由</h2></div><button type="button" data-close-dialog class="close-button">×</button></div><input type="hidden" id="provider-id" /><div class="form-grid"><label>名称<input id="provider-name" required placeholder="例如：DeepL 官方" /></label><label>类型<select id="provider-kind"><option value="deepl">DeepL API</option><option value="deeplx">DeepLX / DLX</option><option value="custom">自定义 API</option></select></label></div><label>服务地址<input id="provider-endpoint" required placeholder="https://api.deepl.com" /><small id="endpoint-help">DeepL 地址会自动补齐 /v2/translate。</small></label><label>API Key / Token<input id="provider-key" type="password" placeholder="DeepL Key、DLX Token 或 Bearer Token" /><small>保存后仅会在列表中显示掩码。</small></label><div class="form-grid three"><label>优先级<input id="provider-priority" type="number" min="1" value="100" required /><small>越小越优先</small></label><label>权重<input id="provider-weight" type="number" min="1" value="1" required /><small>同优先级分配比例</small></label><label>超时（秒）<input id="provider-timeout" type="number" min="2" value="20" required /></label></div><label class="check-row"><input id="provider-enabled" type="checkbox" checked /> 创建后立即启用</label><div class="modal-actions"><button type="button" data-close-dialog class="button ghost">取消</button><button id="save-provider" type="submit" class="button yellow">保存路由</button></div></form></dialog>
+    <dialog id="log-dialog"><div class="log-dialog-content"><div class="modal-heading"><div><span class="eyebrow">REQUEST TRACE</span><h2>请求详情</h2></div><button type="button" data-close-log class="close-button">×</button></div><p class="log-hint">下游请求、每次上游请求与上游返回均按时间顺序保存；鉴权信息不会记录。</p><pre id="log-detail"></pre></div></dialog>
     <script src="/static/app.js"></script>
   </body>
 </html>

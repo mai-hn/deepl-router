@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import time
+import uuid
 from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.wsgi import WSGIMiddleware
-from fastapi.responses import JSONResponse
 from flask import Flask, send_from_directory
 from pydantic import BaseModel, Field
 
@@ -63,7 +64,7 @@ def flask_app() -> Flask:
     return application
 
 
-app = FastAPI(title="DeepRouter", version="0.1.0")
+app = FastAPI(title="DeepRouter", version="0.2.0")
 
 
 def require_downstream_key(authorization: str | None = Header(default=None)) -> None:
@@ -94,21 +95,21 @@ def create_provider(payload: ProviderInput):
 def update_provider(provider_id: int, payload: ProviderPatch):
     item = store.update_provider(provider_id, payload.model_dump(exclude_unset=True))
     if not item:
-        raise HTTPException(status_code=404, detail="通道不存在")
+        raise HTTPException(status_code=404, detail="路由不存在")
     return item
 
 
 @app.delete("/api/providers/{provider_id}", status_code=204)
 def delete_provider(provider_id: int):
     if not store.delete_provider(provider_id):
-        raise HTTPException(status_code=404, detail="通道不存在")
+        raise HTTPException(status_code=404, detail="路由不存在")
 
 
 @app.post("/api/providers/{provider_id}/check")
 async def check_provider(provider_id: int):
     provider = store.provider(provider_id)
     if not provider:
-        raise HTTPException(status_code=404, detail="通道不存在")
+        raise HTTPException(status_code=404, detail="路由不存在")
     return await router.check(provider)
 
 
@@ -127,38 +128,67 @@ def update_settings(payload: SettingsInput):
     return get_settings()
 
 
-async def run_translation(text: str, target_lang: str, source_lang: str | None):
+@app.get("/api/logs")
+def list_request_logs(limit: int = 50):
+    return store.request_logs(max(1, min(limit, 100)))
+
+
+@app.get("/api/logs/{log_id}")
+def get_request_log(log_id: int):
+    item = store.request_log(log_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="日志不存在")
+    return item
+
+
+def normalize_language(language: str | None, source: bool = False) -> str | None:
+    if not language:
+        return None
+    normalized = language.strip().lower()
+    if source and normalized in {"auto", "detect", "auto-detect"}:
+        return None
+    aliases = {"zh": "ZH", "zh-cn": "ZH", "zh-hans": "ZH", "zh-tw": "ZH-HANT", "zh-hant": "ZH-HANT", "pt-br": "PT-BR", "pt-pt": "PT-PT"}
+    return aliases.get(normalized, normalized.upper())
+
+
+async def run_translation(text: str, target_lang: str, source_lang: str | None, route: str) -> dict:
+    request_id = uuid.uuid4().hex
+    downstream_request = {"text": text, "target_lang": target_lang, "source_lang": source_lang}
+    started = time.perf_counter()
     try:
-        result = await router.translate(text, target_lang.upper(), source_lang.upper() if source_lang else None)
-        return {"translations": [{"text": result.text, "detected_source_language": result.detected_source_language}], "provider": result.provider}
+        result = await router.translate(text, normalize_language(target_lang), normalize_language(source_lang, source=True) if source_lang else None)
+        response = {"translations": [{"text": result.text, "detected_source_language": result.detected_source_language}], "provider": result.provider}
+        attempts = result.attempts or [{
+            "provider": result.provider, "status": "success",
+            "request": result.upstream_request or {}, "response": result.upstream_response or {},
+        }]
+        store.create_request_log(
+            request_id=request_id, route=route, downstream_request=downstream_request,
+            upstream_attempts=attempts, response_body=response, provider=result.provider,
+            status="success", latency_ms=round((time.perf_counter() - started) * 1000),
+        )
+        return response
     except TranslationError as exc:
+        store.create_request_log(
+            request_id=request_id, route=route, downstream_request=downstream_request,
+            upstream_attempts=exc.attempts, response_body=None, provider=None, status="failed",
+            latency_ms=round((time.perf_counter() - started) * 1000), error=str(exc),
+        )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/translate")
 async def translate_json(payload: TranslateInput, _: None = Depends(require_downstream_key)):
-    # Immersive Translate custom interface: {source_lang, target_lang, text_list}.
     texts = payload.text_list or ([payload.text] if isinstance(payload.text, str) else payload.text)
     if not texts:
         raise HTTPException(status_code=422, detail="text 或 text_list 不能为空")
-    results = [await run_translation(text, payload.target_lang, payload.source_lang) for text in texts]
-    translations = [
-        {
-            "text": result["translations"][0]["text"],
-            "detected_source_lang": result["translations"][0]["detected_source_language"],
-        }
-        for result in results
-    ]
-    return {
-        "data": translations[0]["text"] if len(translations) == 1 else [item["text"] for item in translations],
-        "translations": translations,
-        "providers": [r["provider"] for r in results],
-    }
+    results = [await run_translation(text, payload.target_lang, payload.source_lang, "/translate") for text in texts]
+    translations = [{"text": result["translations"][0]["text"], "detected_source_lang": result["translations"][0]["detected_source_language"]} for result in results]
+    return {"data": translations[0]["text"] if len(translations) == 1 else [item["text"] for item in translations], "translations": translations, "providers": [result["provider"] for result in results]}
 
 
 @app.post("/v2/translate")
 async def translate_deepl(request: Request, authorization: str | None = Header(default=None)):
-    """DeepL-compatible endpoint supporting the official JSON and form payloads."""
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         payload = await request.json()
@@ -179,18 +209,13 @@ async def translate_deepl(request: Request, authorization: str | None = Header(d
     provided = authorization.removeprefix("DeepL-Auth-Key ").removeprefix("Bearer ") if authorization else auth_key or ""
     if configured_key and provided != configured_key:
         raise HTTPException(status_code=403, detail="无效的下游访问密钥")
-    results = [await run_translation(item, target_lang, source_lang) for item in text]
+    results = [await run_translation(item, target_lang, source_lang, "/v2/translate") for item in text]
     return {"translations": [item["translations"][0] for item in results]}
 
 
 @app.get("/v2/usage")
 def usage(_: None = Depends(require_downstream_key)):
     return {"character_count": 0, "character_limit": 0, "router": "DeepRouter"}
-
-
-@app.exception_handler(TranslationError)
-async def translation_error_handler(_, exc: TranslationError):
-    return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
 app.mount("/", WSGIMiddleware(flask_app()))
