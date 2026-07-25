@@ -34,7 +34,7 @@
         <div class="panel-heading"><div class="heading-icon green">▦</div><div><h2>路由策略与下游 Key</h2><p>设置通道分配逻辑，以及客户端的访问凭证</p></div></div>
         <div class="settings-grid"><label>路由策略<select><option>加权轮询（推荐）</option></select><small>根据通道优先级与权重，平衡请求分配。</small></label><label>失败重试次数<select><option>自动回退</option></select><small>失败后尝试下一个候选通道。</small></label></div>
         <div class="strategy-bottom"><label class="switch-row">启用失败回退 <input id="fallback-enabled" type="checkbox" checked /><span class="switch"><i></i></span></label><button id="save-strategy" class="button outline">保存策略</button></div>
-        <div id="endpoint" class="key-line"><label>下游访问 Key <input id="downstream-key" type="password" placeholder="留空仅用于本机开发" /><small>下游客户端通过 <code>Authorization: Bearer &lt;key&gt;</code> 调用。</small></label><button id="save-key" class="button yellow">保存 Key</button></div>
+        <div id="endpoint" class="key-line"><label>下游访问 Key <input id="downstream-key" type="password" placeholder="留空仅用于本机开发" /><small>下游客户端通过 <code>Authorization: Bearer &lt;key&gt;</code> 调用。</small></label><div class="key-actions"><button id="save-key" class="button yellow">保存 Key</button><button id="clear-key" class="button danger">清除 Key</button></div></div>
         <div class="endpoint-code"><span>DeepL 兼容</span><code>POST /v2/translate</code><span>沉浸式翻译</span><code>POST /translate</code></div>
       </section>
 
