@@ -24,9 +24,10 @@ router = ProviderRouter(store)
 
 class ProviderInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["deepl", "deeplx", "custom"]
+    kind: Literal["deepl", "deeplx", "tencent", "custom"]
     endpoint: str = Field(min_length=8, max_length=500)
     api_key: str = Field(default="", max_length=500)
+    api_secret: str = Field(default="", max_length=500)
     priority: int = Field(default=100, ge=1, le=10000)
     weight: int = Field(default=1, ge=1, le=1000)
     enabled: bool = True
@@ -35,9 +36,10 @@ class ProviderInput(BaseModel):
 
 class ProviderPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
-    kind: Literal["deepl", "deeplx", "custom"] | None = None
+    kind: Literal["deepl", "deeplx", "tencent", "custom"] | None = None
     endpoint: str | None = Field(default=None, min_length=8, max_length=500)
     api_key: str | None = Field(default=None, max_length=500)
+    api_secret: str | None = Field(default=None, max_length=500)
     priority: int | None = Field(default=None, ge=1, le=10000)
     weight: int | None = Field(default=None, ge=1, le=1000)
     enabled: bool | None = None
@@ -78,7 +80,7 @@ def flask_app() -> Flask:
     return application
 
 
-app = FastAPI(title="DeepRouter", version="0.2.0")
+app = FastAPI(title="Translate Router", version="0.3.0")
 
 
 def require_downstream_key(authorization: str | None = Header(default=None)) -> None:
@@ -131,7 +133,7 @@ def create_providers_batch(payload: BatchProvidersInput):
         label = "DeepL 官方" if kind == "deepl" else "DeepLX"
         parsed.append({
             "name": f"{label} · {parsed_url.netloc}", "kind": kind, "endpoint": endpoint,
-            "api_key": key, "priority": payload.priority, "weight": payload.weight,
+            "api_key": key, "api_secret": "", "priority": payload.priority, "weight": payload.weight,
             "enabled": True, "timeout_seconds": payload.timeout_seconds,
         })
     if errors:
