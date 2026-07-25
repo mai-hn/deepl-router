@@ -5,7 +5,9 @@ import time
 import uuid
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.wsgi import WSGIMiddleware
 from flask import Flask, send_from_directory
@@ -54,6 +56,13 @@ class TranslateInput(BaseModel):
     source_lang: str | None = None
 
 
+class BatchProvidersInput(BaseModel):
+    lines: str = Field(min_length=3, max_length=100_000)
+    priority: int = Field(default=100, ge=1, le=10000)
+    weight: int = Field(default=1, ge=1, le=1000)
+    timeout_seconds: int = Field(default=20, ge=2, le=120)
+
+
 def flask_app() -> Flask:
     application = Flask(__name__, static_folder=str(BASE_DIR / "static"), static_url_path="/static")
 
@@ -91,6 +100,42 @@ def create_provider(payload: ProviderInput):
     return store.create_provider(payload.model_dump())
 
 
+@app.post("/api/providers/batch", status_code=201)
+def create_providers_batch(payload: BatchProvidersInput):
+    parsed: list[dict] = []
+    errors: list[str] = []
+    for line_number, raw_line in enumerate(payload.lines.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) not in {2, 3}:
+            errors.append(f"第 {line_number} 行应为：deepl/dlx | url | key（可选）")
+            continue
+        kind_token = parts[0].lower()
+        kind = {"deepl": "deepl", "dlx": "deeplx", "deeplx": "deeplx"}.get(kind_token)
+        if not kind:
+            errors.append(f"第 {line_number} 行类型只能是 deepl 或 dlx")
+            continue
+        endpoint = parts[1].rstrip("/")
+        parsed_url = urlparse(endpoint)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            errors.append(f"第 {line_number} 行 URL 无效")
+            continue
+        key = parts[2] if len(parts) == 3 else ""
+        label = "DeepL 官方" if kind == "deepl" else "DeepLX"
+        parsed.append({
+            "name": f"{label} · {parsed_url.netloc}", "kind": kind, "endpoint": endpoint,
+            "api_key": key, "priority": payload.priority, "weight": payload.weight,
+            "enabled": True, "timeout_seconds": payload.timeout_seconds,
+        })
+    if errors:
+        raise HTTPException(status_code=422, detail="；".join(errors))
+    if not parsed:
+        raise HTTPException(status_code=422, detail="没有可导入的路由")
+    return store.create_providers(parsed)
+
+
 @app.patch("/api/providers/{provider_id}")
 def update_provider(provider_id: int, payload: ProviderPatch):
     item = store.update_provider(provider_id, payload.model_dump(exclude_unset=True))
@@ -111,6 +156,57 @@ async def check_provider(provider_id: int):
     if not provider:
         raise HTTPException(status_code=404, detail="路由不存在")
     return await router.check(provider)
+
+
+def deepl_usage_url(provider: dict) -> str:
+    endpoint = provider["endpoint"].rstrip("/")
+    if provider["api_key"].endswith(":fx"):
+        return "https://api-free.deepl.com/v2/usage"
+    if "/v2/" in endpoint:
+        endpoint = endpoint.split("/v2/", 1)[0]
+    elif endpoint.endswith("/v2"):
+        endpoint = endpoint[:-3]
+    return f"{endpoint}/v2/usage"
+
+
+async def query_provider_usage(provider: dict) -> dict:
+    if provider["kind"] != "deepl":
+        raise HTTPException(status_code=422, detail="仅官方 DeepL API 路由支持额度查询")
+    if not provider["api_key"]:
+        raise HTTPException(status_code=422, detail="该路由没有配置 DeepL API Key")
+    usage_url = deepl_usage_url(provider)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(float(provider["timeout_seconds"]))) as client:
+            response = await client.get(usage_url, headers={"Authorization": f"DeepL-Auth-Key {provider['api_key']}"})
+            body = response.json()
+            response.raise_for_status()
+        count = int(body.get("character_count", 0))
+        limit = int(body.get("character_limit", 0))
+        store.set_usage(provider["id"], count, limit)
+        return {"provider_id": provider["id"], "character_count": count, "character_limit": limit, "usage_url": usage_url}
+    except Exception as exc:  # noqa: BLE001
+        store.set_usage(provider["id"], None, None, str(exc)[:500])
+        raise HTTPException(status_code=502, detail=f"额度查询失败：{exc}") from exc
+
+
+@app.post("/api/usage")
+async def query_all_provider_usage():
+    providers = [provider for provider in store.providers(reveal_key=True) if provider["kind"] == "deepl"]
+    results = []
+    for provider in providers:
+        try:
+            results.append({"ok": True, **await query_provider_usage(provider)})
+        except HTTPException as exc:
+            results.append({"ok": False, "provider_id": provider["id"], "error": exc.detail})
+    return results
+
+
+@app.post("/api/providers/{provider_id}/usage")
+async def query_single_provider_usage(provider_id: int):
+    provider = store.provider(provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="路由不存在")
+    return await query_provider_usage(provider)
 
 
 @app.get("/api/settings")

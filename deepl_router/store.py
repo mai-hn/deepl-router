@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS providers (
   last_status TEXT NOT NULL DEFAULT 'unknown',
   last_latency_ms INTEGER,
   last_error TEXT,
+  usage_character_count INTEGER,
+  usage_character_limit INTEGER,
+  usage_checked_at TEXT,
+  usage_error TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -51,9 +55,22 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             conn.executescript(SCHEMA)
+            self._ensure_provider_usage_columns(conn)
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('routing_mode', 'weighted')")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('fallback_enabled', 'true')")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('downstream_key', '')")
+
+    @staticmethod
+    def _ensure_provider_usage_columns(conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
+        for name, definition in {
+            "usage_character_count": "INTEGER",
+            "usage_character_limit": "INTEGER",
+            "usage_checked_at": "TEXT",
+            "usage_error": "TEXT",
+        }.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE providers ADD COLUMN {name} {definition}")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -94,6 +111,21 @@ class Store:
             row = conn.execute("SELECT * FROM providers WHERE id = ?", (cursor.lastrowid,)).fetchone()
         return self.row_to_dict(row)
 
+    def create_providers(self, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        fields = ("name", "kind", "endpoint", "api_key", "priority", "weight", "enabled", "timeout_seconds")
+        with self.connection() as conn:
+            ids = []
+            for payload in payloads:
+                cursor = conn.execute(
+                    f"INSERT INTO providers ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
+                    [payload[field] for field in fields],
+                )
+                ids.append(cursor.lastrowid)
+            rows = conn.execute(
+                f"SELECT * FROM providers WHERE id IN ({','.join('?' for _ in ids)}) ORDER BY id ASC", ids
+            ).fetchall()
+        return [self.row_to_dict(row) for row in rows]
+
     def update_provider(self, provider_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
         allowed = {"name", "kind", "endpoint", "api_key", "priority", "weight", "enabled", "timeout_seconds"}
         changes = {key: value for key, value in payload.items() if key in allowed and value is not None}
@@ -112,6 +144,14 @@ class Store:
     def set_health(self, provider_id: int, status: str, latency_ms: int | None, error: str | None = None) -> None:
         with self.connection() as conn:
             conn.execute("UPDATE providers SET last_status = ?, last_latency_ms = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, latency_ms, error, provider_id))
+
+    def set_usage(self, provider_id: int, character_count: int | None, character_limit: int | None, error: str | None = None) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """UPDATE providers SET usage_character_count = ?, usage_character_limit = ?,
+                   usage_checked_at = CURRENT_TIMESTAMP, usage_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                (character_count, character_limit, error, provider_id),
+            )
 
     def settings(self) -> dict[str, str]:
         with self.connection() as conn:

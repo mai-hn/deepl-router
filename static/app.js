@@ -18,12 +18,23 @@ function escapeHtml(value = "") {
   return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 }
 
+function formatUsage(provider) {
+  if (provider.kind !== "deepl") return "—";
+  if (provider.usage_character_count == null || provider.usage_character_limit == null) {
+    return `<button class="row-action quota-action" data-usage="${provider.id}">查询</button>`;
+  }
+  const limit = provider.usage_character_limit;
+  const count = provider.usage_character_count;
+  const percent = limit ? Math.min(100, Math.round((count / limit) * 100)) : 0;
+  return `<button class="quota" data-usage="${provider.id}" title="点击刷新额度"><b>${percent}%</b><span>${count.toLocaleString()} / ${limit.toLocaleString()}</span></button>`;
+}
+
 function renderProviders() {
   $("#providers-body").innerHTML = providers.map((provider) => `<tr>
     <td><span class="provider-name">${escapeHtml(provider.name)}</span><span class="key-hint">${escapeHtml(provider.key_hint)}</span></td>
     <td><span class="kind ${provider.kind}">${kindLabel[provider.kind]}</span></td>
     <td><span class="status"><i class="dot ${provider.last_status}"></i>${statusLabel[provider.last_status] || "未检测"}</span></td>
-    <td>${provider.priority}</td><td>${provider.weight}</td><td class="latency">${provider.last_latency_ms ? `${provider.last_latency_ms} ms` : "—"}</td>
+    <td>${provider.priority}</td><td>${provider.weight}</td><td class="latency">${provider.last_latency_ms ? `${provider.last_latency_ms} ms` : "—"}</td><td>${formatUsage(provider)}</td>
     <td><input class="toggle" type="checkbox" data-toggle="${provider.id}" ${provider.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(provider.name)}"></td>
     <td><div class="row-actions"><button class="row-action" data-check="${provider.id}" title="测试路由">◌</button><button class="row-action" data-edit="${provider.id}" title="编辑">✎</button><button class="row-action" data-delete="${provider.id}" title="删除">×</button></div></td>
   </tr>`).join("");
@@ -71,12 +82,31 @@ function openProvider(provider) {
   $("#provider-dialog").showModal();
 }
 
+function openBatchDialog() {
+  $("#batch-form").reset();
+  $("#batch-priority").value = 100;
+  $("#batch-weight").value = 1;
+  $("#batch-timeout").value = 20;
+  $("#batch-dialog").showModal();
+}
+
 async function saveProvider(event) {
   event.preventDefault();
   const id = $("#provider-id").value;
   const data = { name: $("#provider-name").value.trim(), kind: $("#provider-kind").value, endpoint: $("#provider-endpoint").value.trim(), api_key: $("#provider-key").value, priority: Number($("#provider-priority").value), weight: Number($("#provider-weight").value), timeout_seconds: Number($("#provider-timeout").value), enabled: $("#provider-enabled").checked };
   if (id && !data.api_key) delete data.api_key;
   try { await request(id ? `/api/providers/${id}` : "/api/providers", { method: id ? "PATCH" : "POST", body: JSON.stringify(data) }); $("#provider-dialog").close(); await loadProviders(); } catch (error) { alert(error.message); }
+}
+
+async function saveBatch(event) {
+  event.preventDefault();
+  const payload = { lines: $("#batch-lines").value, priority: Number($("#batch-priority").value), weight: Number($("#batch-weight").value), timeout_seconds: Number($("#batch-timeout").value) };
+  try {
+    const created = await request("/api/providers/batch", { method: "POST", body: JSON.stringify(payload) });
+    $("#batch-dialog").close();
+    await loadProviders();
+    alert(`已导入 ${created.length} 条路由`);
+  } catch (error) { alert(error.message); }
 }
 
 async function loadSettings() {
@@ -87,6 +117,23 @@ async function loadSettings() {
 
 async function testProvider(id) {
   try { const result = await request(`/api/providers/${id}/check`, { method: "POST" }); alert(result.ok ? `路由可用，${result.latency_ms} ms` : `检测失败：${result.error}`); } catch (error) { alert(error.message); } finally { await loadProviders(); }
+}
+
+async function queryUsage(id) {
+  try {
+    const result = await request(`/api/providers/${id}/usage`, { method: "POST" });
+    await loadProviders();
+    alert(`额度：${result.character_count.toLocaleString()} / ${result.character_limit.toLocaleString()}`);
+  } catch (error) { alert(error.message); }
+}
+
+async function queryAllUsage() {
+  try {
+    const results = await request("/api/usage", { method: "POST" });
+    await loadProviders();
+    const failed = results.filter((item) => !item.ok).length;
+    alert(failed ? `已完成额度查询，${failed} 个路由失败` : `已完成 ${results.length} 个官方 DeepL 路由的额度查询`);
+  } catch (error) { alert(error.message); }
 }
 
 async function testTranslation() {
@@ -111,11 +158,15 @@ document.addEventListener("click", async (event) => {
   const target = event.target.closest("button, input");
   if (!target) return;
   if (target.id === "add-provider") openProvider();
+  if (target.id === "batch-provider") openBatchDialog();
+  if (target.id === "refresh-usage") queryAllUsage();
   if (target.dataset.closeDialog !== undefined) $("#provider-dialog").close();
+  if (target.dataset.closeBatch !== undefined) $("#batch-dialog").close();
   if (target.dataset.closeLog !== undefined) $("#log-dialog").close();
   if (target.id === "refresh-logs") loadLogs();
   if (target.dataset.edit) openProvider(providers.find((provider) => provider.id === Number(target.dataset.edit)));
   if (target.dataset.check) testProvider(target.dataset.check);
+  if (target.dataset.usage) queryUsage(target.dataset.usage);
   if (target.dataset.log) openLog(target.dataset.log);
   if (target.dataset.delete && confirm("确定删除此路由？")) { await request(`/api/providers/${target.dataset.delete}`, { method: "DELETE" }); await loadProviders(); }
   if (target.dataset.toggle) { await request(`/api/providers/${target.dataset.toggle}`, { method: "PATCH", body: JSON.stringify({ enabled: target.checked }) }); await loadProviders(); }
@@ -126,4 +177,5 @@ document.addEventListener("click", async (event) => {
 });
 
 $("#provider-form").addEventListener("submit", saveProvider);
+$("#batch-form").addEventListener("submit", saveBatch);
 Promise.all([loadProviders(), loadSettings(), loadLogs()]).catch((error) => { console.error(error); alert("无法连接到服务：" + error.message); });
