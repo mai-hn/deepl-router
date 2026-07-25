@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
@@ -61,6 +62,10 @@ class BatchProvidersInput(BaseModel):
     priority: int = Field(default=100, ge=1, le=10000)
     weight: int = Field(default=1, ge=1, le=1000)
     timeout_seconds: int = Field(default=20, ge=2, le=120)
+
+
+class ProviderIdsInput(BaseModel):
+    provider_ids: list[int] = Field(min_length=1, max_length=1000)
 
 
 def flask_app() -> Flask:
@@ -148,6 +153,33 @@ def update_provider(provider_id: int, payload: ProviderPatch):
 def delete_provider(provider_id: int):
     if not store.delete_provider(provider_id):
         raise HTTPException(status_code=404, detail="路由不存在")
+
+
+@app.post("/api/providers/check")
+async def check_all_providers():
+    providers = store.providers(reveal_key=True)
+    semaphore = asyncio.Semaphore(12)
+
+    async def check_one(provider: dict) -> dict:
+        async with semaphore:
+            result = await router.check(provider)
+        return {"provider_id": provider["id"], "name": provider["name"], **result}
+
+    results = await asyncio.gather(*(check_one(provider) for provider in providers))
+    unhealthy = sum(not result["ok"] for result in results)
+    return {"total": len(results), "healthy": len(results) - unhealthy, "unhealthy": unhealthy, "results": results}
+
+
+@app.post("/api/providers/batch/disable-unhealthy")
+def disable_unhealthy_providers(payload: ProviderIdsInput):
+    provider_ids = store.disable_unhealthy_providers(payload.provider_ids)
+    return {"count": len(provider_ids), "provider_ids": provider_ids}
+
+
+@app.post("/api/providers/batch/delete-unhealthy")
+def delete_unhealthy_providers(payload: ProviderIdsInput):
+    provider_ids = store.delete_unhealthy_providers(payload.provider_ids)
+    return {"count": len(provider_ids), "provider_ids": provider_ids}
 
 
 @app.post("/api/providers/{provider_id}/check")

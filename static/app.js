@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 let providers = [];
 let requestLogs = [];
+let lastUnhealthyProviderIds = [];
 
 const kindLabel = { deepl: "DeepL API", deeplx: "DeepLX / DLX", custom: "自定义 API" };
 const statusLabel = { healthy: "可用", unhealthy: "不可用", unknown: "未检测" };
@@ -136,6 +137,41 @@ async function queryAllUsage() {
   } catch (error) { alert(error.message); }
 }
 
+function renderBatchCheckResult(result) {
+  const container = $("#batch-check-result");
+  lastUnhealthyProviderIds = result.results.filter((item) => !item.ok).map((item) => item.provider_id);
+  container.hidden = false;
+  container.innerHTML = `<div><b>批量检测完成</b><span>${result.healthy} 个可用 / ${result.unhealthy} 个不可用（共 ${result.total} 个）</span></div>${lastUnhealthyProviderIds.length ? `<div class="batch-check-actions"><button class="button outline" id="disable-unhealthy">禁用不可用路由（${lastUnhealthyProviderIds.length}）</button><button class="button danger" id="delete-unhealthy">删除不可用路由（${lastUnhealthyProviderIds.length}）</button></div>` : ""}`;
+}
+
+async function checkAllProviders() {
+  const button = $("#batch-check");
+  button.disabled = true;
+  button.textContent = "检测中…";
+  try {
+    const result = await request("/api/providers/check", { method: "POST" });
+    renderBatchCheckResult(result);
+    await loadProviders();
+  } catch (error) { alert(error.message); } finally {
+    button.disabled = false;
+    button.textContent = "批量检测";
+  }
+}
+
+async function handleUnhealthyProviders(action) {
+  if (!lastUnhealthyProviderIds.length) return;
+  const isDelete = action === "delete";
+  const message = isDelete ? `确定删除本次检测到的 ${lastUnhealthyProviderIds.length} 个不可用路由？此操作不可恢复。` : `确定禁用本次检测到的 ${lastUnhealthyProviderIds.length} 个不可用路由？`;
+  if (!confirm(message)) return;
+  try {
+    const result = await request(`/api/providers/batch/${isDelete ? "delete" : "disable"}-unhealthy`, { method: "POST", body: JSON.stringify({ provider_ids: lastUnhealthyProviderIds }) });
+    lastUnhealthyProviderIds = [];
+    $("#batch-check-result").hidden = true;
+    await loadProviders();
+    alert(isDelete ? `已删除 ${result.count} 个不可用路由` : `已禁用 ${result.count} 个不可用路由`);
+  } catch (error) { alert(error.message); }
+}
+
 async function testTranslation() {
   const status = $("#test-status");
   status.textContent = "正在请求路由…";
@@ -159,7 +195,10 @@ document.addEventListener("click", async (event) => {
   if (!target) return;
   if (target.id === "add-provider") openProvider();
   if (target.id === "batch-provider") openBatchDialog();
+  if (target.id === "batch-check") checkAllProviders();
   if (target.id === "refresh-usage") queryAllUsage();
+  if (target.id === "disable-unhealthy") handleUnhealthyProviders("disable");
+  if (target.id === "delete-unhealthy") handleUnhealthyProviders("delete");
   if (target.dataset.closeDialog !== undefined) $("#provider-dialog").close();
   if (target.dataset.closeBatch !== undefined) $("#batch-dialog").close();
   if (target.dataset.closeLog !== undefined) $("#log-dialog").close();
