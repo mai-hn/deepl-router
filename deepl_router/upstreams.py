@@ -105,6 +105,7 @@ class TencentCloudUpstream(Upstream):
     service = "tmt"
     version = "2018-03-21"
     action = "TextTranslate"
+    region = "ap-guangzhou"
     language_codes = {"ZH": "zh", "ZH-HANT": "zh-TW", "EN": "en", "JA": "ja", "KO": "ko", "DE": "de", "FR": "fr", "ES": "es", "RU": "ru", "IT": "it", "PT-BR": "pt", "PT-PT": "pt"}
 
     @staticmethod
@@ -139,7 +140,7 @@ class TencentCloudUpstream(Upstream):
         secret_signing = self._hmac(secret_service, "tc3_request")
         signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
         authorization = f"TC3-HMAC-SHA256 Credential={secret_id}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
-        headers = {"Authorization": authorization, "Content-Type": "application/json; charset=utf-8", "Host": host, "X-TC-Action": self.action, "X-TC-Version": self.version, "X-TC-Timestamp": str(timestamp)}
+        headers = {"Authorization": authorization, "Content-Type": "application/json; charset=utf-8", "Host": host, "X-TC-Action": self.action, "X-TC-Version": self.version, "X-TC-Timestamp": str(timestamp), "X-TC-Region": self.region}
         request = {"method": "POST", "endpoint": endpoint, "action": self.action, "body": body}
         try:
             response = await client.post(endpoint, content=payload, headers=headers)
