@@ -109,11 +109,11 @@ class ProviderRouter:
         try:
             await self._call_provider(provider, "health check", "ZH", "EN")
             latency_ms = round((time.perf_counter() - started) * 1000)
-            self.store.set_health(provider["id"], "healthy", latency_ms)
+            self.store.set_health(provider["id"], "healthy", latency_ms, source="check")
             return {"ok": True, "latency_ms": latency_ms}
         except Exception as exc:  # noqa: BLE001
             latency_ms = round((time.perf_counter() - started) * 1000)
-            self.store.set_health(provider["id"], "unhealthy", latency_ms, str(exc)[:500])
+            self.store.set_health(provider["id"], "unhealthy", latency_ms, str(exc)[:500], source="check")
             return {"ok": False, "latency_ms": latency_ms, "error": str(exc)}
 
     async def _call_provider(self, provider: dict[str, Any], text: str, target_lang: str, source_lang: str | None) -> TranslationResult:

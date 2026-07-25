@@ -1,7 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 let providers = [];
 let requestLogs = [];
-let lastUnhealthyProviderIds = [];
+let batchCheckRunning = false;
 
 const kindLabel = { deepl: "DeepL API", deeplx: "DeepLX / DLX", custom: "自定义 API" };
 const statusLabel = { healthy: "可用", unhealthy: "不可用", unknown: "未检测" };
@@ -30,11 +30,26 @@ function formatUsage(provider) {
   return `<button class="quota" data-usage="${provider.id}" title="点击刷新额度"><b>${percent}%</b><span>${count.toLocaleString()} / ${limit.toLocaleString()}</span></button>`;
 }
 
+function healthStatus(provider) {
+  const events = provider.health_history?.length ? provider.health_history : (provider.last_status === "unknown" ? [] : [{ status: provider.last_status, source: "legacy" }]);
+  const oldestFirst = events.slice(0, 12).reverse();
+  const bars = Array(Math.max(0, 12 - oldestFirst.length)).fill({ status: "unknown" }).concat(oldestFirst);
+  const label = oldestFirst.length ? `近 ${oldestFirst.length} 次：${oldestFirst.map((item) => item.status === "healthy" ? "可用" : "不可用").join("、")}` : "暂无检测或调用记录";
+  return `<div class="health-status" title="${label}">${bars.map((item) => `<i class="${item.status}"></i>`).join("")}</div>`;
+}
+
+function renderUnhealthyActions() {
+  const unhealthyCount = providers.filter((provider) => provider.last_status === "unhealthy").length;
+  const container = $("#unhealthy-batch-actions");
+  container.hidden = unhealthyCount === 0;
+  container.innerHTML = unhealthyCount ? `<span>当前有 <b>${unhealthyCount}</b> 个不可用路由</span><div><button class="button outline" id="disable-unhealthy">批量禁用</button><button class="button danger" id="delete-unhealthy">批量删除</button></div>` : "";
+}
+
 function renderProviders() {
   $("#providers-body").innerHTML = providers.map((provider) => `<tr>
     <td><span class="provider-name">${escapeHtml(provider.name)}</span><span class="key-hint">${escapeHtml(provider.key_hint)}</span></td>
     <td><span class="kind ${provider.kind}">${kindLabel[provider.kind]}</span></td>
-    <td><span class="status"><i class="dot ${provider.last_status}"></i>${statusLabel[provider.last_status] || "未检测"}</span></td>
+    <td>${healthStatus(provider)}</td>
     <td>${provider.priority}</td><td>${provider.weight}</td><td class="latency">${provider.last_latency_ms ? `${provider.last_latency_ms} ms` : "—"}</td><td>${formatUsage(provider)}</td>
     <td><input class="toggle" type="checkbox" data-toggle="${provider.id}" ${provider.enabled ? "checked" : ""} aria-label="启用 ${escapeHtml(provider.name)}"></td>
     <td><div class="row-actions"><button class="row-action" data-check="${provider.id}" title="测试路由">◌</button><button class="row-action" data-edit="${provider.id}" title="编辑">✎</button><button class="row-action" data-delete="${provider.id}" title="删除">×</button></div></td>
@@ -42,6 +57,7 @@ function renderProviders() {
   $("#empty-providers").hidden = providers.length > 0;
   $("#provider-count").textContent = providers.length;
   $("#healthy-count").textContent = providers.filter((provider) => provider.last_status === "healthy").length;
+  renderUnhealthyActions();
 }
 
 function formatTime(value) { return value ? value.replace("T", " ").replace("Z", "") : "—"; }
@@ -137,36 +153,66 @@ async function queryAllUsage() {
   } catch (error) { alert(error.message); }
 }
 
-function renderBatchCheckResult(result) {
+function renderBatchCheckResult(result, complete = true) {
   const container = $("#batch-check-result");
-  lastUnhealthyProviderIds = result.results.filter((item) => !item.ok).map((item) => item.provider_id);
   container.hidden = false;
-  container.innerHTML = `<div><b>批量检测完成</b><span>${result.healthy} 个可用 / ${result.unhealthy} 个不可用（共 ${result.total} 个）</span></div>${lastUnhealthyProviderIds.length ? `<div class="batch-check-actions"><button class="button outline" id="disable-unhealthy">禁用不可用路由（${lastUnhealthyProviderIds.length}）</button><button class="button danger" id="delete-unhealthy">删除不可用路由（${lastUnhealthyProviderIds.length}）</button></div>` : ""}`;
+  const completed = result.healthy + result.unhealthy;
+  container.innerHTML = `<div><b>${complete ? "批量检测完成" : "批量检测中"}</b><span>${result.healthy} 个可用 / ${result.unhealthy} 个不可用（已完成 ${completed} / ${result.total}）</span></div>`;
 }
 
 async function checkAllProviders() {
   const button = $("#batch-check");
+  if (batchCheckRunning) return;
+  const targets = [...providers];
+  if (!targets.length) return alert("请先添加路由");
+  batchCheckRunning = true;
   button.disabled = true;
   button.textContent = "检测中…";
+  const results = [];
+  let nextIndex = 0;
+  const renderProgress = () => {
+    const healthy = results.filter((item) => item.ok).length;
+    renderBatchCheckResult({ total: targets.length, healthy, unhealthy: results.length - healthy }, results.length === targets.length);
+  };
+  const checkOne = async () => {
+    while (nextIndex < targets.length) {
+      const provider = targets[nextIndex++];
+      try {
+        const result = await request(`/api/providers/${provider.id}/check`, { method: "POST" });
+        results.push({ provider_id: provider.id, ...result });
+        const current = providers.find((item) => item.id === provider.id);
+        if (current) {
+          current.last_status = result.ok ? "healthy" : "unhealthy";
+          current.last_latency_ms = result.latency_ms;
+          current.health_history = [{ status: current.last_status, latency_ms: result.latency_ms, source: "check" }, ...(current.health_history || [])].slice(0, 12);
+          renderProviders();
+        }
+      } catch (error) {
+        results.push({ provider_id: provider.id, ok: false, error: error.message });
+        const current = providers.find((item) => item.id === provider.id);
+        if (current) { current.last_status = "unhealthy"; renderProviders(); }
+      }
+      renderProgress();
+    }
+  };
   try {
-    const result = await request("/api/providers/check", { method: "POST" });
-    renderBatchCheckResult(result);
+    await Promise.all(Array.from({ length: Math.min(12, targets.length) }, checkOne));
     await loadProviders();
-  } catch (error) { alert(error.message); } finally {
+  } finally {
+    batchCheckRunning = false;
     button.disabled = false;
     button.textContent = "批量检测";
   }
 }
 
 async function handleUnhealthyProviders(action) {
-  if (!lastUnhealthyProviderIds.length) return;
+  const providerIds = providers.filter((provider) => provider.last_status === "unhealthy").map((provider) => provider.id);
+  if (!providerIds.length) return alert("当前没有不可用路由");
   const isDelete = action === "delete";
-  const message = isDelete ? `确定删除本次检测到的 ${lastUnhealthyProviderIds.length} 个不可用路由？此操作不可恢复。` : `确定禁用本次检测到的 ${lastUnhealthyProviderIds.length} 个不可用路由？`;
+  const message = isDelete ? `确定删除 ${providerIds.length} 个不可用路由？此操作不可恢复。` : `确定禁用 ${providerIds.length} 个不可用路由？`;
   if (!confirm(message)) return;
   try {
-    const result = await request(`/api/providers/batch/${isDelete ? "delete" : "disable"}-unhealthy`, { method: "POST", body: JSON.stringify({ provider_ids: lastUnhealthyProviderIds }) });
-    lastUnhealthyProviderIds = [];
-    $("#batch-check-result").hidden = true;
+    const result = await request(`/api/providers/batch/${isDelete ? "delete" : "disable"}-unhealthy`, { method: "POST", body: JSON.stringify({ provider_ids: providerIds }) });
     await loadProviders();
     alert(isDelete ? `已删除 ${result.count} 个不可用路由` : `已禁用 ${result.count} 个不可用路由`);
   } catch (error) { alert(error.message); }
