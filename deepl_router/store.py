@@ -46,6 +46,16 @@ CREATE TABLE IF NOT EXISTS request_logs (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
+CREATE TABLE IF NOT EXISTS provider_health_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('healthy', 'unhealthy')),
+  latency_ms INTEGER,
+  error TEXT,
+  source TEXT NOT NULL DEFAULT 'call',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_provider_health_events_provider_created_at ON provider_health_events(provider_id, id DESC);
 """
 
 
@@ -94,7 +104,11 @@ class Store:
     def providers(self, reveal_key: bool = False) -> list[dict[str, Any]]:
         with self.connection() as conn:
             rows = conn.execute("SELECT * FROM providers ORDER BY priority ASC, id ASC").fetchall()
-        return [self.row_to_dict(row, reveal_key) for row in rows]
+        items = [self.row_to_dict(row, reveal_key) for row in rows]
+        histories = self.health_history([item["id"] for item in items])
+        for item in items:
+            item["health_history"] = histories.get(item["id"], [])
+        return items
 
     def provider(self, provider_id: int, reveal_key: bool = True) -> dict[str, Any] | None:
         with self.connection() as conn:
@@ -176,9 +190,29 @@ class Store:
                 conn.execute(f"DELETE FROM providers WHERE id IN ({affected_placeholders})", affected_ids)
         return affected_ids
 
-    def set_health(self, provider_id: int, status: str, latency_ms: int | None, error: str | None = None) -> None:
+    def set_health(self, provider_id: int, status: str, latency_ms: int | None, error: str | None = None, source: str = "call") -> None:
         with self.connection() as conn:
             conn.execute("UPDATE providers SET last_status = ?, last_latency_ms = ?, last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, latency_ms, error, provider_id))
+            conn.execute(
+                "INSERT INTO provider_health_events(provider_id, status, latency_ms, error, source) VALUES (?, ?, ?, ?, ?)",
+                (provider_id, status, latency_ms, error, source),
+            )
+
+    def health_history(self, provider_ids: list[int], limit: int = 12) -> dict[int, list[dict[str, Any]]]:
+        if not provider_ids:
+            return {}
+        placeholders = ",".join("?" for _ in provider_ids)
+        with self.connection() as conn:
+            rows = conn.execute(
+                f"SELECT provider_id, status, latency_ms, source, created_at FROM provider_health_events WHERE provider_id IN ({placeholders}) ORDER BY id DESC",
+                provider_ids,
+            ).fetchall()
+        histories: dict[int, list[dict[str, Any]]] = {provider_id: [] for provider_id in provider_ids}
+        for row in rows:
+            history = histories[row["provider_id"]]
+            if len(history) < limit:
+                history.append(dict(row))
+        return histories
 
     def set_usage(self, provider_id: int, character_count: int | None, character_limit: int | None, error: str | None = None) -> None:
         with self.connection() as conn:

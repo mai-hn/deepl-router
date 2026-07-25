@@ -68,3 +68,13 @@ def test_batch_check_can_disable_and_delete_unhealthy_routes(tmp_path, monkeypat
     deleted = client.post("/api/providers/batch/delete-unhealthy", json={"provider_ids": [unhealthy["id"]]})
     assert deleted.json()["count"] == 1
     assert temp_store.provider(unhealthy["id"]) is None
+
+
+def test_provider_health_history_keeps_recent_check_and_call_states(tmp_path):
+    store = Store(tmp_path / "router.db")
+    provider = store.create_provider({"name": "Route", "kind": "deeplx", "endpoint": "https://route.example", "api_key": "", "priority": 1, "weight": 1, "enabled": True, "timeout_seconds": 20})
+    store.set_health(provider["id"], "healthy", 90, source="call")
+    store.set_health(provider["id"], "unhealthy", 120, "timeout", source="check")
+    history = store.providers()[0]["health_history"]
+    assert [item["status"] for item in history] == ["unhealthy", "healthy"]
+    assert [item["source"] for item in history] == ["check", "call"]

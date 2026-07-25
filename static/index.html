@@ -25,7 +25,8 @@
 
       <section id="providers" class="panel provider-panel">
         <div class="panel-heading"><div class="heading-icon purple">↔</div><div><h2>DeepL 路由列表</h2><p>管理可用的翻译服务路由</p></div><div class="provider-actions"><button class="button outline" id="refresh-usage">刷新额度</button><button class="button outline" id="batch-check">批量检测</button><button class="button outline" id="batch-provider">批量添加</button><button class="button yellow" id="add-provider">＋ 添加路由</button></div></div>
-        <div class="table-wrap"><table><thead><tr><th>通道</th><th>类型</th><th>状态</th><th>优先级</th><th>权重</th><th>延迟</th><th>额度</th><th>启用</th><th>操作</th></tr></thead><tbody id="providers-body"></tbody></table></div>
+        <div id="unhealthy-batch-actions" class="unhealthy-batch-actions" hidden></div>
+        <div class="table-wrap"><table><thead><tr><th>通道</th><th>类型</th><th>健康状态</th><th>优先级</th><th>权重</th><th>延迟</th><th>额度</th><th>启用</th><th>操作</th></tr></thead><tbody id="providers-body"></tbody></table></div>
         <div id="empty-providers" class="empty-state">尚未配置 DeepL 路由。点击「添加路由」以接入 DeepL、DeepLX 或自定义 API。</div>
         <div id="batch-check-result" class="batch-check-result" hidden></div>
         <p class="panel-note">优先级数值越小越优先；同优先级通道使用平滑加权轮询；请求失败时根据配置自动回退。</p>
