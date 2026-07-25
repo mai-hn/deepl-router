@@ -51,6 +51,7 @@ def test_tencent_text_translate_request_and_response():
     result = asyncio.run(run())
     assert result.text == "你好"
     assert captured["headers"]["x-tc-action"] == "TextTranslate"
+    assert captured["headers"]["x-tc-region"] == "ap-guangzhou"
     assert captured["headers"]["authorization"].startswith("TC3-HMAC-SHA256 Credential=secret-id/")
     assert '"Source":"en"' in captured["body"]
     assert '"Target":"zh"' in captured["body"]
