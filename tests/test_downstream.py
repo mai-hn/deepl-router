@@ -26,3 +26,13 @@ def test_immersive_translate_text_list(monkeypatch):
     response = client.post("/translate", json={"source_lang": "en", "target_lang": "zh", "text_list": ["one", "two"]})
     assert response.status_code == 200
     assert [item["text"] for item in response.json()["translations"]] == ["译文:one", "译文:two"]
+
+
+def test_downstream_key_can_be_cleared(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(application.store, "update_settings", lambda values: saved.update(values) or values)
+    monkeypatch.setattr(application.store, "settings", lambda: {"downstream_key": ""})
+    client = TestClient(application.app)
+    response = client.put("/api/settings", json={"downstream_key": ""})
+    assert response.status_code == 200
+    assert saved["downstream_key"] == ""

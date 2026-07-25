@@ -105,6 +105,7 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.toggle) { await request(`/api/providers/${target.dataset.toggle}`, { method: "PATCH", body: JSON.stringify({ enabled: target.checked }) }); await loadProviders(); }
   if (target.id === "save-strategy") { await request("/api/settings", { method: "PUT", body: JSON.stringify({ fallback_enabled: $("#fallback-enabled").checked }) }); alert("路由策略已保存"); }
   if (target.id === "save-key") { const key = $("#downstream-key").value; const payload = key ? { downstream_key: key } : {}; await request("/api/settings", { method: "PUT", body: JSON.stringify(payload) }); $("#downstream-key").value = ""; await loadSettings(); alert("下游访问密钥已保存"); }
+  if (target.id === "clear-key") { if (confirm("确定清除下游访问 Key？清除后客户端可不带 Key 访问接口。")) { await request("/api/settings", { method: "PUT", body: JSON.stringify({ downstream_key: "" }) }); $("#downstream-key").value = ""; await loadSettings(); alert("下游访问 Key 已清除"); } }
   if (target.id === "test-translation") testTranslation();
 });
 
