@@ -1,6 +1,7 @@
 import { request } from "./client";
 import type {
   CheckResult,
+  BatchCheckResult,
   DashboardStats,
   Provider,
   ProviderInput,
@@ -24,6 +25,7 @@ export const deleteProvider = (id: number) => request<void>(`/api/providers/${id
 export const createProvidersBatch = (payload: { lines: string; priority: number; weight: number; timeout_seconds: number }) =>
   request<Provider[]>("/api/providers/batch", { method: "POST", body: JSON.stringify(payload) });
 export const checkProvider = (id: number) => request<CheckResult>(`/api/providers/${id}/check`, { method: "POST" });
+export const checkAllProviders = () => request<BatchCheckResult>("/api/providers/check", { method: "POST" });
 export const disableUnhealthy = (providerIds: number[]) =>
   request<{ count: number; provider_ids: number[] }>("/api/providers/batch/disable-unhealthy", {
     method: "POST",

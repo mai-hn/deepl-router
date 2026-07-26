@@ -116,6 +116,13 @@ export interface CheckResult {
   error?: string;
 }
 
+export interface BatchCheckResult {
+  total: number;
+  healthy: number;
+  unhealthy: number;
+  results: Array<CheckResult & { provider_id: number; name: string }>;
+}
+
 export interface QuotaQueryResult {
   ok?: boolean;
   provider_id: number;
