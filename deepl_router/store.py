@@ -11,10 +11,11 @@ PROVIDERS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('deepl', 'deeplx', 'tencent', 'custom')),
+  kind TEXT NOT NULL,
   endpoint TEXT NOT NULL,
   api_key TEXT NOT NULL DEFAULT '',
   api_secret TEXT NOT NULL DEFAULT '',
+  region TEXT NOT NULL DEFAULT '',
   priority INTEGER NOT NULL DEFAULT 100,
   weight INTEGER NOT NULL DEFAULT 1,
   enabled INTEGER NOT NULL DEFAULT 1,
@@ -22,10 +23,10 @@ CREATE TABLE IF NOT EXISTS providers (
   last_status TEXT NOT NULL DEFAULT 'unknown',
   last_latency_ms INTEGER,
   last_error TEXT,
-  usage_character_count INTEGER,
-  usage_character_limit INTEGER,
-  usage_checked_at TEXT,
-  usage_error TEXT,
+  quota TEXT,
+  quota_checked_at TEXT,
+  quota_error TEXT,
+  quota_limit REAL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -69,16 +70,18 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as conn:
             conn.executescript(SCHEMA)
-            self._migrate_provider_kinds(conn)
             self._ensure_provider_columns(conn)
+            self._migrate_usage_to_quota(conn)
+            self._rebuild_providers_if_needed(conn)
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('routing_mode', 'weighted')")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('fallback_enabled', 'true')")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES('downstream_key', '')")
 
     @staticmethod
-    def _migrate_provider_kinds(conn: sqlite3.Connection) -> None:
+    def _rebuild_providers_if_needed(conn: sqlite3.Connection) -> None:
         definition = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'providers'").fetchone()["sql"]
-        if "'tencent'" in definition:
+        # 注意列名 quota_checked_at 含 "check" 子串，须匹配 CHECK( 约束语法
+        if "CHECK(" not in definition.upper().replace(" ", ""):
             return
         conn.execute("ALTER TABLE providers RENAME TO providers_legacy")
         conn.executescript(PROVIDERS_SCHEMA)
@@ -94,13 +97,26 @@ class Store:
         existing = {row["name"] for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
         for name, definition in {
             "api_secret": "TEXT NOT NULL DEFAULT ''",
-            "usage_character_count": "INTEGER",
-            "usage_character_limit": "INTEGER",
-            "usage_checked_at": "TEXT",
-            "usage_error": "TEXT",
+            "region": "TEXT NOT NULL DEFAULT ''",
+            "quota": "TEXT",
+            "quota_checked_at": "TEXT",
+            "quota_error": "TEXT",
+            "quota_limit": "REAL",
         }.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE providers ADD COLUMN {name} {definition}")
+
+    @staticmethod
+    def _migrate_usage_to_quota(conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(providers)").fetchall()}
+        if "usage_character_count" not in existing:
+            return
+        rows = conn.execute(
+            "SELECT id, usage_character_count, usage_character_limit, usage_checked_at FROM providers WHERE quota IS NULL AND usage_character_count IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            quota = json.dumps({"type": "characters", "used": row["usage_character_count"], "limit": row["usage_character_limit"]})
+            conn.execute("UPDATE providers SET quota = ?, quota_checked_at = ? WHERE id = ?", (quota, row["usage_checked_at"], row["id"]))
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -114,8 +130,16 @@ class Store:
 
     @staticmethod
     def row_to_dict(row: sqlite3.Row, reveal_key: bool = False) -> dict[str, Any]:
+        from .upstreams import quota_exceeded
+
         item = dict(row)
         item["enabled"] = bool(item["enabled"])
+        if item.get("quota"):
+            try:
+                item["quota"] = json.loads(item["quota"])
+            except ValueError:
+                item["quota"] = None
+        item["quota_exceeded"] = quota_exceeded(item)
         if not reveal_key:
             key = item.pop("api_key", "")
             item.pop("api_secret", None)
@@ -137,23 +161,31 @@ class Store:
         return self.row_to_dict(row, reveal_key) if row else None
 
     def create_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
-        fields = ("name", "kind", "endpoint", "api_key", "api_secret", "priority", "weight", "enabled", "timeout_seconds")
+        fields = ("name", "kind", "endpoint", "api_key", "api_secret", "region", "priority", "weight", "enabled", "timeout_seconds", "quota_limit")
         with self.connection() as conn:
             cursor = conn.execute(
                 f"INSERT INTO providers ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
-                [payload.get(field, "") if field == "api_secret" else payload[field] for field in fields],
+                [self._field_value(payload, field) for field in fields],
             )
             row = conn.execute("SELECT * FROM providers WHERE id = ?", (cursor.lastrowid,)).fetchone()
         return self.row_to_dict(row)
 
+    @staticmethod
+    def _field_value(payload: dict[str, Any], field: str) -> Any:
+        if field in {"api_secret", "region"}:
+            return payload.get(field, "") or ""
+        if field == "quota_limit":
+            return payload.get(field)
+        return payload[field]
+
     def create_providers(self, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        fields = ("name", "kind", "endpoint", "api_key", "api_secret", "priority", "weight", "enabled", "timeout_seconds")
+        fields = ("name", "kind", "endpoint", "api_key", "api_secret", "region", "priority", "weight", "enabled", "timeout_seconds", "quota_limit")
         with self.connection() as conn:
             ids = []
             for payload in payloads:
                 cursor = conn.execute(
                     f"INSERT INTO providers ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
-                    [payload.get(field, "") if field == "api_secret" else payload[field] for field in fields],
+                    [self._field_value(payload, field) for field in fields],
                 )
                 ids.append(cursor.lastrowid)
             rows = conn.execute(
@@ -162,8 +194,9 @@ class Store:
         return [self.row_to_dict(row) for row in rows]
 
     def update_provider(self, provider_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
-        allowed = {"name", "kind", "endpoint", "api_key", "api_secret", "priority", "weight", "enabled", "timeout_seconds"}
-        changes = {key: value for key, value in payload.items() if key in allowed and value is not None}
+        allowed = {"name", "kind", "endpoint", "api_key", "api_secret", "region", "priority", "weight", "enabled", "timeout_seconds", "quota_limit"}
+        # quota_limit 允许显式置 None（清除限额），其余字段忽略 None
+        changes = {key: value for key, value in payload.items() if key in allowed and (value is not None or key == "quota_limit")}
         if not changes:
             return self.provider(provider_id, reveal_key=False)
         assignments = ", ".join(f"{key} = ?" for key in changes)
@@ -235,13 +268,30 @@ class Store:
                 history.append(dict(row))
         return histories
 
-    def set_usage(self, provider_id: int, character_count: int | None, character_limit: int | None, error: str | None = None) -> None:
+    def set_quota(self, provider_id: int, quota: dict[str, Any] | None, error: str | None = None) -> None:
         with self.connection() as conn:
             conn.execute(
-                """UPDATE providers SET usage_character_count = ?, usage_character_limit = ?,
-                   usage_checked_at = CURRENT_TIMESTAMP, usage_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
-                (character_count, character_limit, error, provider_id),
+                """UPDATE providers SET quota = ?, quota_checked_at = CURRENT_TIMESTAMP,
+                   quota_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                (json.dumps(quota, ensure_ascii=False) if quota is not None else None, error, provider_id),
             )
+
+    def request_stats(self) -> dict[str, Any]:
+        with self.connection() as conn:
+            total = conn.execute("SELECT COUNT(*) AS n FROM request_logs").fetchone()["n"]
+            row = conn.execute(
+                """SELECT COUNT(*) AS total,
+                          COALESCE(SUM(status = 'success'), 0) AS success,
+                          AVG(latency_ms) AS avg_latency
+                   FROM request_logs WHERE created_at >= datetime('now', '-1 day')"""
+            ).fetchone()
+        return {
+            "total": total,
+            "last_24h": row["total"],
+            "success_24h": row["success"],
+            "failed_24h": row["total"] - row["success"],
+            "avg_latency_24h": round(row["avg_latency"]) if row["avg_latency"] is not None else None,
+        }
 
     def settings(self) -> dict[str, str]:
         with self.connection() as conn:

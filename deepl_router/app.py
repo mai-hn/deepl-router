@@ -5,49 +5,78 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.middleware.wsgi import WSGIMiddleware
-from flask import Flask, send_from_directory
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
 
 from .router import ProviderRouter, TranslationError
 from .store import Store
+from .upstreams import BATCH_ALIAS_MAP, KINDS, UPSTREAMS, UpstreamError
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+DIST_DIR = BASE_DIR / "frontend" / "dist"
 store = Store(os.getenv("DEEPL_ROUTER_DB", str(BASE_DIR / "data" / "router.db")))
 router = ProviderRouter(store)
 
 
+def _validate_kind(value: str) -> str:
+    if value not in UPSTREAMS:
+        raise ValueError(f"不支持的上游类型：{value}，可选：{', '.join(KINDS)}")
+    return value
+
+
+def _validate_quota_limit(kind: str | None, quota_limit: float | None) -> None:
+    if quota_limit is None or kind is None:
+        return
+    if UPSTREAMS[kind].meta.quota_type is None:
+        raise HTTPException(status_code=422, detail=f"上游类型 {kind} 不支持额度/余额查询，无法设置限额")
+
+
 class ProviderInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["deepl", "deeplx", "tencent", "custom"]
+    kind: str
     endpoint: str = Field(min_length=8, max_length=500)
     api_key: str = Field(default="", max_length=500)
     api_secret: str = Field(default="", max_length=500)
+    region: str = Field(default="", max_length=64)
     priority: int = Field(default=100, ge=1, le=10000)
     weight: int = Field(default=1, ge=1, le=1000)
     enabled: bool = True
     timeout_seconds: int = Field(default=20, ge=2, le=120)
+    quota_limit: float | None = Field(default=None, ge=0)
+
+    @field_validator("kind")
+    @classmethod
+    def check_kind(cls, value: str) -> str:
+        return _validate_kind(value)
 
 
 class ProviderPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
-    kind: Literal["deepl", "deeplx", "tencent", "custom"] | None = None
+    kind: str | None = None
     endpoint: str | None = Field(default=None, min_length=8, max_length=500)
     api_key: str | None = Field(default=None, max_length=500)
     api_secret: str | None = Field(default=None, max_length=500)
+    region: str | None = Field(default=None, max_length=64)
     priority: int | None = Field(default=None, ge=1, le=10000)
     weight: int | None = Field(default=None, ge=1, le=1000)
     enabled: bool | None = None
     timeout_seconds: int | None = Field(default=None, ge=2, le=120)
+    quota_limit: float | None = Field(default=None, ge=0)
+
+    @field_validator("kind")
+    @classmethod
+    def check_kind(cls, value: str | None) -> str | None:
+        return _validate_kind(value) if value is not None else None
 
 
 class SettingsInput(BaseModel):
-    routing_mode: Literal["weighted"] | None = None
+    routing_mode: str | None = None
     fallback_enabled: bool | None = None
     downstream_key: str | None = Field(default=None, max_length=500)
 
@@ -70,17 +99,7 @@ class ProviderIdsInput(BaseModel):
     provider_ids: list[int] = Field(min_length=1, max_length=1000)
 
 
-def flask_app() -> Flask:
-    application = Flask(__name__, static_folder=str(BASE_DIR / "static"), static_url_path="/static")
-
-    @application.get("/")
-    def dashboard():
-        return send_from_directory(BASE_DIR / "static", "index.html")
-
-    return application
-
-
-app = FastAPI(title="Translate Router", version="0.3.0")
+app = FastAPI(title="Translate Router", version="0.4.0")
 
 
 def require_downstream_key(authorization: str | None = Header(default=None)) -> None:
@@ -97,6 +116,25 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/upstream-kinds")
+def list_upstream_kinds():
+    return [UPSTREAMS[kind].meta.to_json() for kind in KINDS]
+
+
+@app.get("/api/dashboard")
+def dashboard_stats():
+    providers = store.providers()
+    return {
+        "providers": {
+            "total": len(providers),
+            "enabled": sum(provider["enabled"] for provider in providers),
+            "healthy": sum(provider["last_status"] == "healthy" for provider in providers),
+            "quota_exceeded": sum(provider["quota_exceeded"] for provider in providers),
+        },
+        "requests": store.request_stats(),
+    }
+
+
 @app.get("/api/providers")
 def list_providers():
     return store.providers()
@@ -104,6 +142,7 @@ def list_providers():
 
 @app.post("/api/providers", status_code=201)
 def create_provider(payload: ProviderInput):
+    _validate_quota_limit(payload.kind, payload.quota_limit)
     return store.create_provider(payload.model_dump())
 
 
@@ -111,18 +150,18 @@ def create_provider(payload: ProviderInput):
 def create_providers_batch(payload: BatchProvidersInput):
     parsed: list[dict] = []
     errors: list[str] = []
+    aliases = "/".join(sorted(set(BATCH_ALIAS_MAP)))
     for line_number, raw_line in enumerate(payload.lines.splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         parts = [part.strip() for part in line.split("|")]
         if len(parts) not in {2, 3}:
-            errors.append(f"第 {line_number} 行应为：deepl/dlx | url | key（可选）")
+            errors.append(f"第 {line_number} 行应为：{aliases} | url | key（可选）")
             continue
-        kind_token = parts[0].lower()
-        kind = {"deepl": "deepl", "dlx": "deeplx", "deeplx": "deeplx"}.get(kind_token)
+        kind = BATCH_ALIAS_MAP.get(parts[0].lower())
         if not kind:
-            errors.append(f"第 {line_number} 行类型只能是 deepl 或 dlx")
+            errors.append(f"第 {line_number} 行类型只能是 {aliases}")
             continue
         endpoint = parts[1].rstrip("/")
         parsed_url = urlparse(endpoint)
@@ -130,7 +169,7 @@ def create_providers_batch(payload: BatchProvidersInput):
             errors.append(f"第 {line_number} 行 URL 无效")
             continue
         key = parts[2] if len(parts) == 3 else ""
-        label = "DeepL 官方" if kind == "deepl" else "DeepLX"
+        label = UPSTREAMS[kind].meta.label
         parsed.append({
             "name": f"{label} · {parsed_url.netloc}", "kind": kind, "endpoint": endpoint,
             "api_key": key, "api_secret": "", "priority": payload.priority, "weight": payload.weight,
@@ -145,7 +184,15 @@ def create_providers_batch(payload: BatchProvidersInput):
 
 @app.patch("/api/providers/{provider_id}")
 def update_provider(provider_id: int, payload: ProviderPatch):
-    item = store.update_provider(provider_id, payload.model_dump(exclude_unset=True))
+    changes = payload.model_dump(exclude_unset=True)
+    if "quota_limit" in changes or "kind" in changes:
+        existing = store.provider(provider_id, reveal_key=False)
+        if not existing:
+            raise HTTPException(status_code=404, detail="路由不存在")
+        kind = changes.get("kind", existing["kind"])
+        quota_limit = changes.get("quota_limit", existing.get("quota_limit"))
+        _validate_quota_limit(kind, quota_limit)
+    item = store.update_provider(provider_id, changes)
     if not item:
         raise HTTPException(status_code=404, detail="路由不存在")
     return item
@@ -192,55 +239,41 @@ async def check_provider(provider_id: int):
     return await router.check(provider)
 
 
-def deepl_usage_url(provider: dict) -> str:
-    endpoint = provider["endpoint"].rstrip("/")
-    if provider["api_key"].endswith(":fx"):
-        return "https://api-free.deepl.com/v2/usage"
-    if "/v2/" in endpoint:
-        endpoint = endpoint.split("/v2/", 1)[0]
-    elif endpoint.endswith("/v2"):
-        endpoint = endpoint[:-3]
-    return f"{endpoint}/v2/usage"
-
-
-async def query_provider_usage(provider: dict) -> dict:
-    if provider["kind"] != "deepl":
-        raise HTTPException(status_code=422, detail="仅官方 DeepL API 路由支持额度查询")
-    if not provider["api_key"]:
-        raise HTTPException(status_code=422, detail="该路由没有配置 DeepL API Key")
-    usage_url = deepl_usage_url(provider)
+async def query_provider_quota(provider: dict) -> dict:
+    upstream = UPSTREAMS.get(provider["kind"])
+    if not upstream or upstream.meta.quota_type is None:
+        raise HTTPException(status_code=422, detail="该上游类型不支持额度/余额查询")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(float(provider["timeout_seconds"]))) as client:
-            response = await client.get(usage_url, headers={"Authorization": f"DeepL-Auth-Key {provider['api_key']}"})
-            body = response.json()
-            response.raise_for_status()
-        count = int(body.get("character_count", 0))
-        limit = int(body.get("character_limit", 0))
-        store.set_usage(provider["id"], count, limit)
-        return {"provider_id": provider["id"], "character_count": count, "character_limit": limit, "usage_url": usage_url}
+        async with httpx.AsyncClient(timeout=httpx.Timeout(float(provider["timeout_seconds"])), follow_redirects=True) as client:
+            result = await upstream.query_quota(client, provider)
+        quota = result.to_json()
+        store.set_quota(provider["id"], quota)
+        return {"provider_id": provider["id"], "quota": quota}
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
-        store.set_usage(provider["id"], None, None, str(exc)[:500])
+        store.set_quota(provider["id"], None, str(exc)[:500])
         raise HTTPException(status_code=502, detail=f"额度查询失败：{exc}") from exc
 
 
-@app.post("/api/usage")
-async def query_all_provider_usage():
-    providers = [provider for provider in store.providers(reveal_key=True) if provider["kind"] == "deepl"]
+@app.post("/api/quota")
+async def query_all_provider_quota():
+    providers = [provider for provider in store.providers(reveal_key=True) if UPSTREAMS.get(provider["kind"]) and UPSTREAMS[provider["kind"]].meta.quota_type is not None]
     results = []
     for provider in providers:
         try:
-            results.append({"ok": True, **await query_provider_usage(provider)})
+            results.append({"ok": True, **await query_provider_quota(provider)})
         except HTTPException as exc:
             results.append({"ok": False, "provider_id": provider["id"], "error": exc.detail})
     return results
 
 
-@app.post("/api/providers/{provider_id}/usage")
-async def query_single_provider_usage(provider_id: int):
+@app.post("/api/providers/{provider_id}/quota")
+async def query_single_provider_quota(provider_id: int):
     provider = store.provider(provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail="路由不存在")
-    return await query_provider_usage(provider)
+    return await query_provider_quota(provider)
 
 
 @app.get("/api/settings")
@@ -348,4 +381,19 @@ def usage(_: None = Depends(require_downstream_key)):
     return {"character_count": 0, "character_limit": 0, "router": "DeepRouter"}
 
 
-app.mount("/", WSGIMiddleware(flask_app()))
+if (DIST_DIR / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=DIST_DIR / "assets"), name="assets")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa(full_path: str):
+    if full_path.startswith(("api/", "v2/")) or full_path in {"api", "v2", "translate"}:
+        raise HTTPException(status_code=404)
+    if full_path:
+        candidate = (DIST_DIR / full_path).resolve()
+        if candidate.is_file() and candidate.is_relative_to(DIST_DIR.resolve()):
+            return FileResponse(candidate)
+    index = DIST_DIR / "index.html"
+    if not index.exists():
+        return PlainTextResponse("前端未构建，请运行：cd frontend && npm install && npm run build", status_code=503)
+    return FileResponse(index)

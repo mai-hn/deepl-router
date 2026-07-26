@@ -1,0 +1,511 @@
+@import "./tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 900;
+  margin: 0;
+}
+
+h1 {
+  font-size: 30px;
+  letter-spacing: -1.4px;
+}
+
+h2 {
+  font-size: 21px;
+  letter-spacing: -0.8px;
+}
+
+p {
+  margin: 0;
+}
+
+code {
+  font-family: var(--font-mono);
+  background: #efede6;
+  border: var(--line);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 12.5px;
+}
+
+/* ---------- buttons ---------- */
+.button {
+  font-family: var(--font-ui);
+  font-weight: 800;
+  font-size: 13.5px;
+  color: var(--ink);
+  background: var(--surface);
+  border: var(--line);
+  border-radius: 11px;
+  padding: 8px 15px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.button.yellow {
+  background: var(--yellow);
+}
+
+.button.danger {
+  background: #ffe1e1;
+}
+
+.button.ghost {
+  box-shadow: none;
+  background: transparent;
+}
+
+.button.small {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 9px;
+}
+
+/* ---------- inputs ---------- */
+input,
+select,
+textarea {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--surface);
+  border: var(--line);
+  border-radius: 11px;
+  padding: 9px 12px;
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 3px solid var(--yellow);
+  outline-offset: 1px;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 800;
+}
+
+label small {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- panel ---------- */
+.panel {
+  background: var(--surface);
+  border: var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 22px;
+  margin-bottom: 26px;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.panel-heading > div:not(.heading-icon) {
+  flex: 1;
+  min-width: 180px;
+}
+
+.panel-heading p {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.heading-icon {
+  width: 39px;
+  height: 39px;
+  border: var(--line);
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 900;
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.heading-icon.purple {
+  background: var(--purple);
+}
+
+.heading-icon.green {
+  background: var(--green);
+}
+
+.heading-icon.yellow {
+  background: var(--yellow);
+  color: var(--ink);
+}
+
+/* ---------- eyebrow ---------- */
+.eyebrow {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1.6px;
+  background: var(--ink);
+  color: var(--yellow);
+  border-radius: 7px;
+  padding: 3px 10px;
+}
+
+/* ---------- table ---------- */
+.table-wrap {
+  overflow-x: auto;
+  border: var(--line);
+  border-radius: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+thead th {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.6px;
+  text-align: left;
+  padding: 10px 12px;
+  background: #f1efe7;
+  border-bottom: var(--line);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e4e1d5;
+  vertical-align: middle;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ---------- misc ---------- */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.muted {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.empty-state {
+  border: 2px dashed var(--ink);
+  border-radius: 12px;
+  padding: 26px;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 600;
+  margin-top: 14px;
+}
+
+.hazard-stripe {
+  height: 12px;
+  background: repeating-linear-gradient(45deg, var(--ink) 0 9px, var(--yellow) 9px 18px);
+  border-radius: 0 0 14px 14px;
+}
+
+/* ---------- dialog ---------- */
+dialog {
+  border: var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 9px 0 var(--ink);
+  background: var(--surface);
+  padding: 24px;
+  width: min(560px, calc(100vw - 40px));
+  max-height: calc(100vh - 80px);
+}
+
+dialog::backdrop {
+  background: rgba(16, 16, 16, 0.45);
+}
+
+.modal-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  gap: 12px;
+}
+
+.modal-heading h2 {
+  margin-top: 8px;
+}
+
+.close-button {
+  border: var(--line);
+  background: var(--surface);
+  border-radius: 9px;
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.close-button:hover {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.form-grid.three {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+/* ---------- kind badge ---------- */
+.kind-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border: 1.5px solid var(--kind-color, var(--purple));
+  color: var(--kind-color, var(--purple));
+  background: color-mix(in srgb, var(--kind-color, var(--purple)) 9%, white);
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+/* ---------- health sparkline ---------- */
+.health-bars {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.health-bars i {
+  width: 6px;
+  height: 22px;
+  border-radius: 3px;
+  background: #e6e9ed;
+}
+
+.health-bars i.healthy {
+  background: var(--green);
+}
+
+.health-bars i.unhealthy {
+  background: var(--red);
+}
+
+/* ---------- quota badge ---------- */
+.quota-badge {
+  display: inline-flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.quota-badge b {
+  font-size: 13.5px;
+}
+
+.quota-badge span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.quota-exceeded-tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: #ffe1e1;
+  color: #b42020;
+  border: 1.5px solid #b42020;
+  border-radius: 7px;
+  padding: 2px 8px;
+}
+
+/* ---------- switch ---------- */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.switch input {
+  display: none;
+}
+
+.switch .track {
+  position: absolute;
+  inset: 0;
+  background: #e2dfd3;
+  border: var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.switch .track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: var(--surface);
+  border: var(--line);
+  border-radius: 50%;
+  transition: left 0.15s ease;
+}
+
+.switch input:checked + .track {
+  background: var(--green);
+}
+
+.switch input:checked + .track::after {
+  left: 22px;
+}
+
+/* ---------- stat card ---------- */
+.stat-card {
+  background: var(--surface);
+  border: var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+}
+
+.stat-card .stat-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.stat-card .stat-value {
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: -1.2px;
+  margin-top: 2px;
+}
+
+.stat-card .stat-hint {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* ---------- log pre ---------- */
+pre.trace {
+  background: #141414;
+  color: #f5f1d7;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border: var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  overflow: auto;
+  max-height: 55vh;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---------- status chips ---------- */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border: var(--line);
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: var(--surface);
+}
+
+.status-chip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.status-chip.bad i {
+  background: var(--red);
+}
+
+@media (max-width: 720px) {
+  .form-grid,
+  .form-grid.three {
+    grid-template-columns: 1fr;
+  }
+}

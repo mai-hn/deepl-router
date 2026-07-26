@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 
 from .store import Store
-from .upstreams import UPSTREAMS, TranslationResult, UpstreamError
+from .upstreams import UPSTREAMS, TranslationResult, UpstreamError, quota_exceeded
 
 
 class TranslationError(RuntimeError):
@@ -21,11 +21,14 @@ class ProviderRouter:
         self._round_robin_weights: dict[tuple[int, tuple[tuple[int, int], ...]], dict[int, int]] = {}
 
     def candidates(self) -> list[dict[str, Any]]:
-        return [provider for provider in self.store.providers(reveal_key=True) if provider["enabled"]]
+        return [provider for provider in self.store.providers(reveal_key=True) if provider["enabled"] and not quota_exceeded(provider)]
 
     def order(self) -> list[dict[str, Any]]:
         providers = self.candidates()
         if not providers:
+            enabled = [provider for provider in self.store.providers(reveal_key=True) if provider["enabled"]]
+            if enabled:
+                raise TranslationError("所有启用路由均已达限额，已自动跳过；请刷新额度或调整限额设置")
             raise TranslationError("No enabled upstream route is available")
         groups: dict[int, list[dict[str, Any]]] = {}
         for provider in providers:

@@ -1,0 +1,18 @@
+:root {
+  --paper: #f6f5f1;
+  --surface: #fffefa;
+  --ink: #101010;
+  --yellow: #ffd400;
+  --purple: #8054eb;
+  --green: #14b86d;
+  --red: #ef4949;
+  --muted: #6d6c67;
+  --line: 2px solid var(--ink);
+  --shadow: 0 6px 0 var(--ink);
+  --shadow-sm: 2px 2px 0 var(--ink);
+  --radius: 17px;
+  --font-ui: "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
+  --sidebar-width: 232px;
+  --sidebar-collapsed: 64px;
+}
