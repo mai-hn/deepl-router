@@ -182,7 +182,7 @@
   flex: 1;
   padding: 26px 28px 48px;
   width: 100%;
-  max-width: 1160px;
+  max-width: none;
 }
 
 @media (max-width: 720px) {
