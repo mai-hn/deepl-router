@@ -254,7 +254,7 @@ export default function ProvidersPage() {
               const collapsed = collapsedKinds.has(kind);
               const meta = metaByKind.get(kind);
               return <Fragment key={kind}>
-                <tr className="provider-group-row"><td colSpan={7}><button type="button" className="provider-group-toggle" aria-expanded={!collapsed} onClick={() => toggleGroup(kind)}><span>{collapsed ? "▸" : "▾"}</span><KindBadge kind={kind} meta={meta} /><small>{group.length} 个路由</small></button></td></tr>
+                <tr className="provider-group-row"><td colSpan={7}><button type="button" className="provider-group-toggle" aria-expanded={!collapsed} onClick={() => toggleGroup(kind)}><span className="group-chevron">{collapsed ? "▸" : "▾"}</span><strong className="provider-group-label">{meta?.label ?? kind}</strong><small>{group.length} 个路由</small></button></td></tr>
                 {!collapsed && group.map((provider) => {
                   const providerMeta = metaByKind.get(provider.kind);
                   return <tr key={provider.id}>

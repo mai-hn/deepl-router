@@ -519,7 +519,8 @@ pre.trace {
 .provider-group-row td { padding: 0; background: #f1efe7; }
 .provider-group-toggle { display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 12px; border: 0; background: transparent; color: var(--ink); cursor: pointer; font-family: var(--font-ui); text-align: left; }
 .provider-group-toggle:hover { background: #e6e3d6; }
-.provider-group-toggle > span { width: 14px; font-family: var(--font-mono); }
+.provider-group-toggle .group-chevron { width: 14px; flex: 0 0 14px; font-family: var(--font-mono); }
+.provider-group-label { white-space: nowrap; }
 .provider-group-toggle small { color: var(--muted); font-weight: 600; }
 
 @media (max-width: 720px) {
